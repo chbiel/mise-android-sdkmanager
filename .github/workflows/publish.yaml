@@ -1,4 +1,4 @@
-name: Generate and Publish Manifest
+name: Test and publish
 
 on:
   push:
