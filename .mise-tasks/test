@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+#MISE description="Run backend plugin tests"
+set -euo pipefail
+
+PLUGIN="android-sdkmanager"
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PASS=0
+FAIL=0
+
+pass() { echo "✓ $1"; PASS=$((PASS + 1)); }
+fail() { echo "✗ $1"; FAIL=$((FAIL + 1)); }
+
+# ── Isolated mise environment ─────────────────────────────────────────────────
+# All mise operations run inside a temp dir so the global tool store,
+# cache, and config are never touched.
+MISE_TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$MISE_TEST_DIR"' EXIT
+export MISE_DATA_DIR="$MISE_TEST_DIR/data"
+export MISE_CACHE_DIR="$MISE_TEST_DIR/cache"
+export MISE_IGNORED_CONFIG_PATHS="${HOME}/.config/mise/config.toml:${HOME}/.config/mise.toml"
+
+cd "$MISE_TEST_DIR"
+
+# ── 1. Plugin registration ────────────────────────────────────────────────────
+echo "=== Plugin registration ==="
+mise plugin link --force "$PLUGIN" "$PLUGIN_DIR"
+pass "plugin link"
+mise cache clear 2>/dev/null
+
+# ── 2. Install dependencies (android-sdk + java) via mise ────────────────────
+echo ""
+echo "=== Installing test dependencies ==="
+
+cat > mise.toml << 'EOF'
+[tools]
+"vfox:mise-plugins/vfox-android-sdk" = "latest"
+java = "temurin-17"
+[settings]
+experimental = true
+EOF
+
+echo "Installing vfox:mise-plugins/vfox-android-sdk and java via mise..."
+mise install --yes
+pass "android-sdk + java installed"
+
+eval "$(mise env --shell bash)"
+pass "android-sdk env loaded (ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>})"
+
+# ── 3. ls-remote: no-version tools ───────────────────────────────────────────
+echo ""
+echo "=== ls-remote (no-version tools) ==="
+for tool in emulator platform-tools; do
+    versions=$(mise ls-remote "${PLUGIN}:${tool}" 2>/dev/null || echo "")
+    if echo "$versions" | grep -qx "latest"; then
+        pass "ls-remote ${tool} returns 'latest'"
+    else
+        fail "ls-remote ${tool} — expected 'latest', got: ${versions:-<empty>}"
+    fi
+done
+
+# ── 4. ls-remote: versioned tools ────────────────────────────────────────────
+echo ""
+echo "=== ls-remote (versioned tools) ==="
+for tool in build-tools platforms ndk cmake; do
+    versions=$(mise ls-remote "${PLUGIN}:${tool}" 2>/dev/null || echo "")
+    if [[ -n "$versions" ]]; then
+        pass "ls-remote ${tool} returns versions"
+    else
+        fail "ls-remote ${tool} — no versions returned"
+    fi
+done
+
+si_versions=$(mise ls-remote "${PLUGIN}:system-images" 2>/dev/null || echo "")
+if echo "$si_versions" | grep -q "^android-"; then
+    pass "ls-remote system-images returns android-NN versions"
+else
+    fail "ls-remote system-images — expected android-NN versions, got: ${si_versions:-<empty>}"
+fi
+
+# ── 5. install + exec-env ────────────────────────────────────────────────────
+echo ""
+echo "=== install + exec-env ==="
+if mise install "${PLUGIN}:platform-tools@latest"; then
+    pass "install platform-tools@latest"
+
+    if mise exec "${PLUGIN}:platform-tools@latest" -- adb version &>/dev/null; then
+        pass "exec-env: adb on PATH after install"
+    else
+        fail "exec-env: adb not found on PATH after install"
+    fi
+else
+    fail "install platform-tools@latest"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+echo ""
+echo "Results: ${PASS} passed, ${FAIL} failed"
+[[ $FAIL -eq 0 ]]
