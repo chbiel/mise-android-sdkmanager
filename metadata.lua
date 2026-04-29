@@ -4,7 +4,7 @@
 
 PLUGIN = { -- luacheck: ignore
   name        = "android-sdkmanager",
-  version     = "1.0.0",
+  version     = "1.1.0",
   description = "Installs Android SDK's sdkmanager dependencies",
   author      = "chbiel",
   homepage    = "https://github.com/chbiel/mise-android-sdkmanager",
