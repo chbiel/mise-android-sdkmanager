@@ -60,4 +60,8 @@ mise install
 
 ## Notes
 
-Some sdkmanager dependencies do not have targetable version, like `emulator`. Use `latest` as their required version.
+Some sdkmanager dependencies do not have a targetable version, like `emulator` and
+`platform-tools` — sdkmanager only ever offers a single version for them. Use `latest`
+as their required version in `mise.toml`. The plugin reads the real version from
+`sdkmanager --list`, so `latest` resolves to that concrete number (e.g. `36.6.11`)
+and mise records it in the lock file instead of the `latest` alias.
