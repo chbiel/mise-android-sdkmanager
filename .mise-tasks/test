@@ -95,6 +95,24 @@ else
     fail "install platform-tools@latest"
 fi
 
+# ── 6. install emulator (sdkmanager → android CLI fallback) ──────────────────
+# Starting with cmdline-tools 22, `emulator` can no longer be installed via
+# sdkmanager and requires `android sdk install`. Verify the plugin installs it
+# (falling back to the android CLI when needed) and puts it on PATH.
+echo ""
+echo "=== install emulator (cmdline-tools 22 fallback) ==="
+if mise install "${PLUGIN}:emulator@latest"; then
+    pass "install emulator@latest"
+
+    if mise exec "${PLUGIN}:emulator@latest" -- emulator -version &>/dev/null; then
+        pass "exec-env: emulator on PATH after install"
+    else
+        fail "exec-env: emulator not found on PATH after install"
+    fi
+else
+    fail "install emulator@latest"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
