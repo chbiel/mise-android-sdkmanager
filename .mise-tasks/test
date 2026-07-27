@@ -46,15 +46,18 @@ pass "android-sdk + java installed"
 eval "$(mise env --shell bash)"
 pass "android-sdk env loaded (ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>})"
 
-# ── 3. ls-remote: no-version tools ───────────────────────────────────────────
+# ── 3. ls-remote: single-version tools ───────────────────────────────────────
+# emulator and platform-tools expose exactly one version in sdkmanager. ls-remote
+# resolves that to the concrete version number (not the "latest" alias) so mise
+# records a real version and can detect updates.
 echo ""
-echo "=== ls-remote (no-version tools) ==="
+echo "=== ls-remote (single-version tools) ==="
 for tool in emulator platform-tools; do
     versions=$(mise ls-remote "${PLUGIN}:${tool}" 2>/dev/null || echo "")
-    if echo "$versions" | grep -qx "latest"; then
-        pass "ls-remote ${tool} returns 'latest'"
+    if echo "$versions" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
+        pass "ls-remote ${tool} returns a concrete version"
     else
-        fail "ls-remote ${tool} — expected 'latest', got: ${versions:-<empty>}"
+        fail "ls-remote ${tool} — expected a concrete version, got: ${versions:-<empty>}"
     fi
 done
 
