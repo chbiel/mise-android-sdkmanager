@@ -133,7 +133,27 @@ Because that root stays fixed across upgrades, all packages coexist in one unifi
 
 Some Android package families do not have a meaningful targetable revision, including `emulator` and `platform-tools`. In those cases, use `latest` in `mise.toml`.
 
-The plugin reads the real installed version from `sdkmanager --list`, so `latest` resolves to a concrete revision such as `36.6.11` and the lock file stores that exact value. If the installed revision differs from the resolved lock-file version, installation fails and shows both values. Refresh the configured or locked version before retrying.
+The plugin parses revisions from `android sdk list` or `sdkmanager --list` output, which may contain both installed and available packages. This lets `latest` resolve to a concrete revision such as `36.6.11`, which mise can track for updates and record in a lockfile.
+
+For `platform-tools` and `emulator`, the SDK installer accepts only the package name, not a target revision. If a successful, validated installation produces a different revision, the plugin warns with both revisions and uses the installed package. This also applies when the installed revision is older. Numeric pins are advisory for these two families: mise may display or lock a resolved revision that differs from the package in the shared SDK root.
+
+Installer failures, missing payloads, invalid revision metadata, and incorrect package identities still fail installation. Other package families are unaffected.
+
+### Recovering from a singleton revision mismatch in CI
+
+Older plugin versions reject revision differences, for example resolving `platform-tools` to `37.0.0` but installing `37.0.1`. Update the plugin to a version containing the warning policy above, including any pinned plugin reference or cached plugin checkout in CI.
+
+Before that update is available, try refreshing discovery and the resolved version from the consuming project, with Android SDK and Java dependencies installed:
+
+```bash
+mise cache clear android-sdkmanager:platform-tools
+mise ls-remote android-sdkmanager:platform-tools
+mise upgrade android-sdkmanager:platform-tools
+```
+
+Use your registered plugin name instead of `android-sdkmanager` (for example, `jds-sdkmanager`). Keep the tool configured as `latest`; if it is explicitly pinned, update that request deliberately. Refresh the lockfile outside locked CI, review the changes, and commit the updated lockfile. Clearing the cache alone does not update a locked version.
+
+This workaround requires discovery and installation to agree on the revision. If a fresh listing still reports `37.0.0` while installation produces `37.0.1`, repeated cache clearing will not bypass the old rejection policy; update the plugin instead.
 
 ### Shared installation
 

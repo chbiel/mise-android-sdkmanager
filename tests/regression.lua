@@ -217,25 +217,34 @@ test("empty successful listing and absent tooling remain empty", function()
     equal(#PLUGIN:BackendListVersions({ tool = "platform-tools" }).versions, 0)
 end)
 
-test("singleton revision mismatches fail without writing an installation marker", function()
-    tools()
-    sdk_install_root = function()
-        return "/sdk"
+for _, tool in ipairs({ "platform-tools", "emulator" }) do
+    for _, revision in ipairs({ "37.0.1", "36.0.0" }) do
+        test(tool .. " revision drift to " .. revision .. " warns and writes an installation marker", function()
+            tools()
+            sdk_install_root = function()
+                return "/sdk"
+            end
+            local directory = "/sdk/" .. tool
+            state.files[directory .. "/" .. (tool == "emulator" and "emulator" or "adb")] = true
+            state.files[directory .. "/source.properties"] = "Pkg.Revision=" .. revision .. "\nPkg.Path=" .. tool
+
+            PLUGIN:BackendInstall({ tool = tool, version = "37.0.0", install_path = "/marker" })
+
+            equal(#state.warnings, 1)
+            contains(
+                state.warnings[1],
+                tool .. ": installed revision " .. revision .. " differs from mise's resolved version 37.0.0"
+            )
+            contains(state.warnings[1], "using the installed revision")
+            contains(state.warnings[1], "cannot pin this shared package")
+            contains(state.warnings[1], "configured/locked revisions are advisory")
+            equal(#state.commands, 4)
+            contains(state.commands[2].command, " sdk install ")
+            equal(state.commands[2].options.env.ANDROID_SDK_ROOT, "/sdk")
+            equal(state.commands[4].command, "printf '%s\\n' " .. shell_quote(tool) .. " > '/marker/.installed'")
+        end)
     end
-    for _, tool in ipairs({ "platform-tools", "emulator" }) do
-        local directory = "/sdk/" .. tool
-        state.files[directory .. "/" .. (tool == "emulator" and "emulator" or "adb")] = true
-        state.files[directory .. "/source.properties"] = "Pkg.Revision=37.0.0\nPkg.Path=" .. tool
-        raises(function()
-            PLUGIN:BackendInstall({ tool = tool, version = "36.0.0", install_path = "/marker" })
-        end, tool .. ": installed revision 37.0.0 differs from mise's resolved version 36.0.0")
-    end
-    equal(#state.warnings, 0)
-    for _, entry in ipairs(state.commands) do
-        assert(not entry.command:find(".installed", 1, true))
-    end
-    equal(state.commands[2].options.env.ANDROID_SDK_ROOT, "/sdk")
-end)
+end
 
 test("matching singleton revision does not warn", function()
     tools()
@@ -274,6 +283,30 @@ test("sdkmanager installs after android install fails", function()
     equal(#state.commands, 4)
     contains(state.commands[3].command, "--licenses")
     contains(state.commands[4].command, "--install")
+end)
+
+test("sdkmanager fallback accepts revision drift with a warning and installation marker", function()
+    tools()
+    sdk_install_root = function()
+        return "/sdk"
+    end
+    state.execute = function(command)
+        if command:find(" sdk install", 1, true) then
+            error("android failed")
+        elseif command:find(" --install ", 1, true) then
+            installed_platform_tools("37.0.1")
+        end
+        return ""
+    end
+
+    PLUGIN:BackendInstall({ tool = "platform-tools", version = "37.0.0", install_path = "/marker" })
+
+    equal(#state.warnings, 1)
+    contains(state.warnings[1], "installed revision 37.0.1 differs from mise's resolved version 37.0.0")
+    equal(#state.commands, 6)
+    contains(state.commands[3].command, "--licenses")
+    contains(state.commands[4].command, "--install")
+    equal(state.commands[6].command, "printf '%s\\n' 'platform-tools' > '/marker/.installed'")
 end)
 
 test("successful command without metadata retries and fails", function()
@@ -366,6 +399,32 @@ test("activation repair failures produce a warning", function()
     ensure_package_installed("/sdk", "platform-tools", "36.0.0")
     equal(#state.warnings, 1)
     contains(state.warnings[1], "offline")
+end)
+
+test("activation repair accepts revision drift with a mismatch warning", function()
+    tools()
+    sdk_install_root = function()
+        return "/sdk"
+    end
+    state.execute = function(command)
+        if command:find(" sdk install", 1, true) then
+            installed_platform_tools("37.0.1")
+        end
+        return ""
+    end
+
+    local result = PLUGIN:BackendExecEnv({ tool = "platform-tools", version = "37.0.0", install_path = "/marker" })
+
+    equal(#state.warnings, 1)
+    contains(state.warnings[1], "installed revision 37.0.1 differs from mise's resolved version 37.0.0")
+    contains(state.warnings[1], "using the installed revision")
+    assert(not state.warnings[1]:find("Could not repair", 1, true))
+    equal(#state.commands, 2)
+    equal(result.env_vars[3].value, "/sdk/platform-tools")
+
+    PLUGIN:BackendExecEnv({ tool = "platform-tools", version = "37.0.0", install_path = "/marker" })
+    equal(#state.warnings, 1)
+    equal(#state.commands, 2)
 end)
 
 test("shell quoting preserves spaces and apostrophes", function()

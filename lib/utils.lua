@@ -397,13 +397,14 @@ function install_package(tool, version, target_root) -- luacheck: ignore
             local revision, failure = installed_package_revision(target_root, tool, version)
             if revision then
                 if NO_VERSION_TOOLS[tool] and revision ~= version then
-                    error(
+                    require("log").warn(
                         tool
                             .. ": installed revision "
                             .. revision
                             .. " differs from mise's resolved version "
                             .. version
-                            .. "; installation rejected. Refresh the configured/locked version before retrying"
+                            .. "; using the installed revision. The SDK installer cannot pin this shared package; "
+                            .. "configured/locked revisions are advisory"
                     )
                 end
                 return
