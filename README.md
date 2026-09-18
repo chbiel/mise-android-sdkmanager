@@ -125,9 +125,30 @@ ${MISE_DATA_DIR}/android-sdk-tools
 
 On environment activation, `backend_exec_env.lua` overrides the `android-sdk` value so that both `ANDROID_SDK_ROOT` and `ANDROID_HOME` point to the stable root. The `android-sdk` tool is then only used to provide the Android command-line tooling and `java`.
 
+During installation and environment activation, the plugin also exposes the dependency's complete `cmdline-tools` directory inside the stable root. It uses a managed symlink (`cmdline-tools` through `.mise-cmdline-tools`) rather than downloading another copy. The link is refreshed when the dependency changes and repaired if its old target disappears. This lets Flutter discover command-line tools inside the same SDK root as the installed packages.
+
+Existing user-owned command-line tools directories and links are preserved. If they are incomplete, the plugin reports the conflict instead of replacing them. Link failures stop installation and produce warnings during environment activation.
+
 Because that root stays fixed across upgrades, all packages coexist in one unified location, which is what Gradle and AGP expect. If a tracked package disappears from the stable root, the plugin tries to reinstall it when the hook runs. Incomplete packages are also repaired, and any repair failure is reported as a warning instead of blocking activation.
 
 ## Common gotchas
+
+### Flutter reports missing command-line tools
+
+Older plugin versions exported the stable SDK root without exposing `cmdline-tools` inside it. Having `sdkmanager` on `PATH` was not enough for Flutter, which looks inside its selected SDK root.
+
+Update the plugin checkout used by your project or CI, including any pinned reference or cached checkout, and reload the mise environment. The activation hook repairs existing plugin-managed installations; reinstalling SDK packages is not necessary. Avoid hardcoding `ANDROID_HOME` to the versioned `android-sdk` dependency.
+
+Run diagnostics in the same mise environment as the build:
+
+```bash
+printf '%s\n' "$ANDROID_HOME" "$ANDROID_SDK_ROOT"
+ls -l "$ANDROID_HOME/cmdline-tools/"
+sdkmanager --sdk_root="$ANDROID_HOME" --list_installed
+flutter doctor -v
+```
+
+Use `--sdk_root` explicitly when listing packages: a standalone `sdkmanager` invocation can otherwise inspect its own installation root instead of the plugin's stable root. Correcting the command-line tools layout does not by itself establish the cause of a separate native-symbol stripping failure.
 
 ### `latest` for some package families
 

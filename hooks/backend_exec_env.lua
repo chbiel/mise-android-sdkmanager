@@ -16,6 +16,10 @@ require("utils")
 function PLUGIN:BackendExecEnv(ctx) -- luacheck: ignore
     local sdk_root = sdk_install_root()
 
+    local ok, failure = pcall(ensure_cmdline_tools, sdk_root)
+    if not ok then
+        require("log").warn("Could not expose cmdline-tools: " .. tostring(failure))
+    end
     ensure_package_installed(sdk_root, ctx.tool, ctx.version)
 
     local env_vars = {

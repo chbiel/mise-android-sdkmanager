@@ -71,6 +71,7 @@ local function test(name, callback)
 end
 
 local function tools()
+    ensure_cmdline_tools = function() end
     available_sdk_tools = function()
         return {
             { kind = "android", path = "/SDK's tools/android" },
@@ -84,6 +85,11 @@ local function installed_platform_tools(revision)
     state.files["/sdk/platform-tools/adb"] = true
     state.files["/sdk/platform-tools/source.properties"] = "Pkg.Revision=" .. revision .. "\nPkg.Path=platform-tools\n"
 end
+
+test("command-line tooling helpers are available before discovery runs", function()
+    equal(type(ensure_cmdline_tools), "function")
+    equal(type(find_cmdline_tools_source), "function")
+end)
 
 test("pipe and whitespace single-version listings", function()
     equal(parse_versions("platform-tools", "  platform-tools | 36.0.0 | Platform tools\n")[1], "36.0.0")
@@ -458,6 +464,7 @@ test("installer commands quote executable and package paths", function()
 end)
 
 test("marker writes succeed in real paths with spaces and apostrophes", function()
+    ensure_cmdline_tools = function() end
     install_package = function() end
     state.execute = function(command)
         local pipe = assert(io.popen(command .. " 2>&1", "r"))
@@ -470,6 +477,157 @@ test("marker writes succeed in real paths with spaces and apostrophes", function
     local marker = assert(io.open(path .. "/.installed", "r"))
     equal(marker:read("*a"), "build-tools;36.0.0\n")
     marker:close()
+end)
+
+test("command-line tooling prefers the active dependency over newer discovered installs", function()
+    state.env.ANDROID_HOME = "/sdk"
+    state.env.ANDROID_SDK_ROOT = "/active"
+    state.files["/active/cmdline-tools"] = true
+    state.files["/active/cmdline-tools/latest/bin/sdkmanager"] = true
+    equal(find_cmdline_tools_source("/sdk"), "/active/cmdline-tools")
+    equal(#state.commands, 0)
+end)
+
+test("command-line tooling uses PATH before fallback discovery and skips its own root", function()
+    state.env.ANDROID_HOME = "/sdk"
+    state.env.ANDROID_SDK_ROOT = "/sdk"
+    state.files["/active/cmdline-tools"] = true
+    state.files["/active/cmdline-tools/latest/bin/sdkmanager"] = true
+    state.execute = function(command)
+        contains(command, "command -v 'sdkmanager'")
+        return "/active/cmdline-tools/latest/bin/sdkmanager\n"
+    end
+    equal(find_cmdline_tools_source("/sdk"), "/active/cmdline-tools")
+end)
+
+test("command-line tooling falls back to discovered dependencies", function()
+    state.env.MISE_DATA_DIR = "/mise"
+    state.files["/mise/installs"] = true
+    state.files["/mise/installs/android-sdk/22/cmdline-tools"] = true
+    state.files["/mise/installs/android-sdk/22/cmdline-tools/latest/bin/android"] = true
+    state.execute = function(command)
+        if command:match("^find ") then
+            return "/mise/installs/android-sdk/22/cmdline-tools/latest/bin/android\n"
+        end
+        return ""
+    end
+    equal(find_cmdline_tools_source("/sdk"), "/mise/installs/android-sdk/22/cmdline-tools")
+end)
+
+test("missing command-line dependency fails install and warns on activation", function()
+    sdk_install_root = function()
+        return "/sdk"
+    end
+    raises(function()
+        PLUGIN:BackendInstall({ tool = "platform-tools", version = "36.0.0", install_path = "/marker" })
+    end, "install android-sdk")
+    installed_platform_tools("36.0.0")
+    local result = PLUGIN:BackendExecEnv({ tool = "platform-tools", version = "36.0.0", install_path = "/marker" })
+    equal(#state.warnings, 1)
+    contains(state.warnings[1], "Could not expose cmdline-tools")
+    equal(result.env_vars[1].value, "/sdk")
+    equal(result.env_vars[2].value, "/sdk")
+end)
+
+local function real_filesystem()
+    state.execute = function(command)
+        local pipe = assert(io.popen("{\n" .. command .. "\n} 2>&1", "r"))
+        local output = pipe:read("*a")
+        assert(pipe:close(), output)
+        return output
+    end
+    package.loaded.file.exists = function(path)
+        return os.execute("test -e " .. shell_quote(path)) == true
+    end
+end
+
+local function fixture_tools(path)
+    assert(os.execute("mkdir -p " .. shell_quote(path .. "/cmdline-tools/latest/bin")))
+    local binary = assert(io.open(path .. "/cmdline-tools/latest/bin/sdkmanager", "w"))
+    binary:write("#!/bin/sh\nprintf 'fixture sdkmanager\\n'\n")
+    binary:close()
+    assert(os.execute("chmod +x " .. shell_quote(path .. "/cmdline-tools/latest/bin/sdkmanager")))
+end
+
+test("installation and activation expose tooling and repair switched or removed dependencies", function()
+    real_filesystem()
+    local sdk = temporary .. "/SDK's stable root"
+    local first, second = temporary .. "/dependency 20", temporary .. "/dependency's 22"
+    fixture_tools(first)
+    fixture_tools(second)
+    state.env.ANDROID_HOME = first
+    sdk_install_root = function()
+        return sdk
+    end
+    install_package = function(_, _, target)
+        equal(target, sdk)
+        assert(package.loaded.file.exists(sdk .. "/cmdline-tools/latest/bin/sdkmanager"))
+    end
+    ensure_package_installed = function(target)
+        equal(target, sdk)
+    end
+    PLUGIN:BackendInstall({ tool = "platform-tools", version = "36.0.0", install_path = temporary .. "/link marker" })
+    local function check(source)
+        equal(state.execute("readlink " .. shell_quote(sdk .. "/.mise-cmdline-tools")), source .. "/cmdline-tools\n")
+        equal(state.execute(shell_quote(sdk .. "/cmdline-tools/latest/bin/sdkmanager")), "fixture sdkmanager\n")
+    end
+    check(first)
+    for _ = 1, 2 do
+        local result = PLUGIN:BackendExecEnv({ tool = "platform-tools", version = "36.0.0", install_path = "/marker" })
+        equal(result.env_vars[1].value, sdk)
+        equal(result.env_vars[2].value, sdk)
+        equal(result.env_vars[3].value, sdk .. "/platform-tools")
+        check(first)
+    end
+    state.env.ANDROID_HOME = second
+    PLUGIN:BackendExecEnv({ tool = "platform-tools", version = "36.0.0", install_path = "/marker" })
+    check(second)
+    assert(os.execute("mv " .. shell_quote(second) .. " " .. shell_quote(second .. ".removed")))
+    state.env.ANDROID_HOME = first
+    PLUGIN:BackendExecEnv({ tool = "platform-tools", version = "36.0.0", install_path = "/marker" })
+    check(first)
+    equal(#state.warnings, 0)
+end)
+
+test("existing user tooling and links are preserved", function()
+    real_filesystem()
+    local sdk, linked = temporary .. "/user SDK", temporary .. "/user linked SDK"
+    fixture_tools(sdk)
+    ensure_cmdline_tools(sdk)
+    assert(not package.loaded.file.exists(sdk .. "/.mise-cmdline-tools"))
+    assert(os.execute("mkdir -p " .. shell_quote(linked)))
+    assert(
+        os.execute("ln -s " .. shell_quote(sdk .. "/cmdline-tools") .. " " .. shell_quote(linked .. "/cmdline-tools"))
+    )
+    ensure_cmdline_tools(linked)
+    equal(state.execute("readlink " .. shell_quote(linked .. "/cmdline-tools")), sdk .. "/cmdline-tools\n")
+end)
+
+test("incomplete directories and broken user links are reported without replacement", function()
+    real_filesystem()
+    local sdk = temporary .. "/incomplete SDK"
+    assert(os.execute("mkdir -p " .. shell_quote(sdk .. "/cmdline-tools")))
+    raises(function()
+        ensure_cmdline_tools(sdk)
+    end, "user-owned path is incomplete")
+    assert(os.execute("rmdir " .. shell_quote(sdk .. "/cmdline-tools")))
+    assert(os.execute("ln -s /nonexistent-sdk-fixture " .. shell_quote(sdk .. "/cmdline-tools")))
+    raises(function()
+        ensure_cmdline_tools(sdk)
+    end, "user-owned path is incomplete")
+    equal(state.execute("readlink " .. shell_quote(sdk .. "/cmdline-tools")), "/nonexistent-sdk-fixture\n")
+end)
+
+test("aliases cannot create command-line tooling link cycles", function()
+    real_filesystem()
+    local sdk, alias = temporary .. "/cycle SDK", temporary .. "/cycle alias"
+    fixture_tools(sdk .. "/nested")
+    assert(os.execute("ln -s " .. shell_quote(sdk .. "/nested") .. " " .. shell_quote(alias)))
+    state.env.ANDROID_HOME = alias
+    raises(function()
+        ensure_cmdline_tools(sdk)
+    end, "inside the stable SDK root")
+    assert(not package.loaded.file.exists(sdk .. "/cmdline-tools"))
 end)
 
 print(string.format("Regression results: %d passed, %d failed", passed, failed))

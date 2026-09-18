@@ -96,6 +96,19 @@ if mise install "${PLUGIN}:platform-tools@latest"; then
         fail "exec-env: adb not found on PATH after install"
     fi
 
+    if mise exec "${PLUGIN}:platform-tools@latest" -- sh -eu -c '
+        test "$ANDROID_HOME" = "$ANDROID_SDK_ROOT"
+        test -d "$ANDROID_HOME/cmdline-tools"
+        sdkmanager=$(find -L "$ANDROID_HOME/cmdline-tools" -type f -path "*/bin/sdkmanager" -print -quit)
+        test -n "$sdkmanager"
+        installed=$("$sdkmanager" --sdk_root="$ANDROID_HOME" --list_installed)
+        printf "%s\n" "$installed" | grep -q "platform-tools"
+    '; then
+        pass "exec-env: command-line tools inside SDK root can list installed packages"
+    else
+        fail "exec-env: command-line tools missing or cannot list stable-root packages"
+    fi
+
 else
     fail "install platform-tools@latest"
 fi

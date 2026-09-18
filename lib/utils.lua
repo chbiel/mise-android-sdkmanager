@@ -134,8 +134,7 @@ end
 --- `cmdline-tools/<ver>/bin/sdkmanager`) independently of any environment variables.
 --- This lets the plugin locate `sdkmanager`/`android` even when neither ANDROID_SDK_ROOT
 --- nor ANDROID_HOME is set — so users no longer need to hardcode ANDROID_HOME.
---- Roots are returned highest-version-first. Our own stable root (which has no
---- cmdline-tools) is naturally excluded.
+--- Roots are returned highest-version-first. The stable root is outside installs.
 --- @return string[] Candidate android-sdk roots, best first
 function find_android_sdk_roots() -- luacheck: ignore
     local cmd = require("cmd")
@@ -250,6 +249,97 @@ function find_binary_in_root(sdk_root, name) -- luacheck: ignore
     end
 
     return nil
+end
+
+--- Locates dependency tooling without selecting the stable root's own link.
+function find_cmdline_tools_source(sdk_root) -- luacheck: ignore
+    local cmd = require("cmd")
+    local seen = { [sdk_root] = true }
+    local function from_root(root)
+        if not root or root == "" or seen[root] then
+            return nil
+        end
+        seen[root] = true
+        if find_binary_in_root(root, "sdkmanager") or find_binary_in_root(root, "android") then
+            return require("file").join_path(root, "cmdline-tools")
+        end
+        return nil
+    end
+
+    for _, key in ipairs({ "ANDROID_HOME", "ANDROID_SDK_ROOT" }) do
+        local source = from_root(os.getenv(key))
+        if source then
+            return source
+        end
+    end
+    for _, name in ipairs({ "sdkmanager", "android" }) do
+        local binary = cmd.exec("command -v " .. shell_quote(name) .. " 2>/dev/null || :"):match("^%s*(.-)%s*$")
+        local source = from_root(binary:match("^(.*)/cmdline%-tools/[^/]+/bin/[^/]+$"))
+        if source then
+            return source
+        end
+    end
+    for _, root in ipairs(find_android_sdk_roots()) do
+        local source = from_root(root)
+        if source then
+            return source
+        end
+    end
+    error("Cannot expose cmdline-tools: install android-sdk and declare it as a dependency")
+end
+
+--- The private indirection identifies links we own, without overwriting user installations.
+function ensure_cmdline_tools(sdk_root) -- luacheck: ignore
+    local cmd = require("cmd")
+    local file = require("file")
+    local destination = file.join_path(sdk_root, "cmdline-tools")
+    local managed_name = ".mise-cmdline-tools"
+    local target = cmd.exec(
+        "if [ -L " .. shell_quote(destination) .. " ]; then readlink " .. shell_quote(destination) .. "; fi"
+    ):gsub("\n$", "")
+    if target ~= managed_name and (target ~= "" or file.exists(destination)) then
+        if find_binary_in_root(sdk_root, "sdkmanager") or find_binary_in_root(sdk_root, "android") then
+            return
+        end
+        error("Cannot expose cmdline-tools: existing user-owned path is incomplete: " .. destination)
+    end
+
+    local source = find_cmdline_tools_source(sdk_root)
+    -- Resolve both directories before linking so aliases cannot introduce a cycle.
+    cmd.exec(
+        "set -eu\n"
+            .. "mkdir -p "
+            .. shell_quote(sdk_root)
+            .. "\n"
+            .. "root=$(cd "
+            .. shell_quote(sdk_root)
+            .. " && pwd -P)\n"
+            .. "source=$(cd "
+            .. shell_quote(source)
+            .. " && pwd -P)\n"
+            .. [[
+case "$source/" in
+    "$root/"*) echo "Cannot link cmdline-tools from inside the stable SDK root" >&2; exit 1 ;;
+esac
+cd "$root"
+if [ -e .mise-cmdline-tools ] && [ ! -L .mise-cmdline-tools ]; then
+    echo "Cannot replace user-owned .mise-cmdline-tools directory" >&2
+    exit 1
+fi
+if [ "$(readlink .mise-cmdline-tools 2>/dev/null || :)" != "$source" ]; then
+    ln -sfn "$source" .mise-cmdline-tools ||
+        [ "$(readlink .mise-cmdline-tools)" = "$source" ]
+fi
+if [ ! -L cmdline-tools ] && [ ! -e cmdline-tools ]; then
+    ln -sn .mise-cmdline-tools cmdline-tools ||
+        [ "$(readlink cmdline-tools)" = .mise-cmdline-tools ]
+fi
+if [ "$(readlink cmdline-tools)" != .mise-cmdline-tools ]; then
+    echo "Cannot replace user-owned cmdline-tools path" >&2
+    exit 1
+fi
+]]
+    )
 end
 
 --- Builds the canonical (semicolon-separated) sdkmanager package identifier.
