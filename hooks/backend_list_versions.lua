@@ -8,71 +8,75 @@ function PLUGIN:BackendListVersions(ctx) -- luacheck: ignore
 
     -- The SDK tool may not be available yet on a fresh machine before android-sdk is
     -- installed. Fall back to an empty list so mise can still proceed with a pinned version.
-    local ok, info = pcall(locate_sdk_tool)
-    if not ok then
+    local tools = available_sdk_tools()
+    if #tools == 0 then
         return { versions = {} }
     end
 
     local cmd = require("cmd")
+    local errors = {}
 
-    if info.kind == "android" then
-        -- The new `android sdk list` output format is not yet stable/confirmed. Parse it
-        -- best-effort; when nothing is recognised, return an empty list so pinned versions
-        -- still resolve. sdkmanager remains the primary, tested path.
-        local android_output = cmd.exec(info.path .. " sdk list 2>/dev/null")
-        return { versions = parse_versions(tool, android_output, "/") }
+    for _, info in ipairs(tools) do
+        local command = shell_quote(info.path) .. ((info.kind == "android") and " sdk list" or " --list")
+        local ok, output = pcall(cmd.exec, command)
+        if ok then
+            local versions = parse_versions(tool, output)
+            if #versions > 0 then
+                return { versions = versions }
+            end
+        else
+            table.insert(errors, info.kind .. ": " .. tostring(output))
+        end
     end
 
-    local output = cmd.exec(info.path .. " --list 2>/dev/null")
-    return { versions = parse_versions(tool, output, ";") }
+    if #errors > 0 then
+        error("Failed to list versions for '" .. tool .. "':\n" .. table.concat(errors, "\n"))
+    end
+    return { versions = {} }
 end
-
--- ---------------------------------------------------------------------------
--- Helpers
--- (Lua hook files are loaded in isolation — helpers cannot be shared across files)
--- ---------------------------------------------------------------------------
 
 --- Parses package listing output into the versions exposed for a tool family.
 --- @param tool string Tool family
 --- @param output string Raw listing output
---- @param sep string Package path separator (";" for sdkmanager, "/" for android)
 --- @return string[] Versions
-function parse_versions(tool, output, sep) -- luacheck: ignore
+function parse_versions(tool, output) -- luacheck: ignore
     local versions = {}
     local seen = {}
-    local sep_pat = sep:gsub("(%W)", "%%%1")
 
     for line in output:gmatch("[^\n]+") do
-        -- sdkmanager --list rows look like:
-        --   "  build-tools;36.0.0             | 36.0.0  | Android SDK Build-Tools 36"
-        local path = line:match("^%s+([^%s|]+)")
+        local path, columns = line:match("^%s*([^%s|]+)%s*(.*)$")
+        local version
         if path then
+            path = path:gsub("/", ";")
             if NO_VERSION_TOOLS[tool] then
-                -- The package path is just the tool name (e.g. "emulator"); read the real
-                -- version from the second pipe-delimited column.
                 if path == tool then
-                    local ver = line:match("|%s*([^|]-)%s*|")
-                    if ver and ver ~= "" and not seen[ver] then
-                        seen[ver] = true
-                        table.insert(versions, ver)
+                    if columns:sub(1, 1) == "|" then
+                        version = columns:match("^|%s*([^|]-)%s*|")
+                    else
+                        version = columns:match("^(%S+)")
+                    end
+                    if version and not valid_sdk_revision(version) then
+                        version = nil
                     end
                 end
             elseif tool == "system-images" then
-                -- Expose only the Android API level; ABI is selected at install time.
-                local api = path:match("^system%-images" .. sep_pat .. "(android%-%d+)" .. sep_pat)
-                if api and not seen[api] then
-                    seen[api] = true
-                    table.insert(versions, api)
+                local api = path:match("^system%-images;(android%-[^;]+);")
+                if api and path == build_package_name(tool, api) then
+                    version = api
                 end
             else
-                local t, v = path:match("^([%w%-%+%.]+)" .. sep_pat .. "(.+)$")
-                if t == tool and v and not seen[v] then
-                    seen[v] = true
-                    table.insert(versions, v)
+                local family, value = path:match("^([^;]+);([^;]+)$")
+                if family == tool then
+                    version = value
                 end
             end
         end
+        if version and not seen[version] then
+            seen[version] = true
+            table.insert(versions, version)
+        end
     end
 
+    table.sort(versions, compare_package_versions)
     return versions
 end

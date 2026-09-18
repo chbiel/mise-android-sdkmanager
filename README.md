@@ -1,16 +1,28 @@
-# android-sdkmanager — mise backend plugin
+# android-sdkmanager
 
-A [mise backend plugin](https://mise.jdx.dev/backend-plugin-development.html) that
-manages Android SDK packages via `sdkmanager`. It exposes each package family as a
-separate tool in the `android-sdkmanager:tool` format, e.g.:
+A [mise backend plugin](https://mise.jdx.dev/backend-plugin-development.html) for Android SDK packages. It exposes each Android package family as a separate `mise` tool, for example:
 
 ```toml
 "android-sdkmanager:build-tools" = { version = "36.0.0", depends = ["android-sdk", "java"] }
 ```
 
-Requires `android-sdk` (recommended `vfox:mise-plugins/vfox-android-sdk`) and `java` installed as tools.
+This keeps Android SDK packages managed by `mise` without forcing them into the versioned `android-sdk` tool directory.
 
-## How to use
+## At a glance
+
+- Install Android packages via `sdkmanager` or the newer `android sdk ...` command.
+- Expose tools like `build-tools`, `platforms`, `platform-tools`, `emulator`, `system-images`, `ndk`, and `cmake`.
+- Use a stable plugin-owned SDK root so package installs survive upgrades and tool switches.
+- Automatically export `ANDROID_SDK_ROOT` and `ANDROID_HOME` for the active environment.
+
+## Prerequisites
+
+Install these as separate `mise` tools:
+
+- `android-sdk` (recommended: `vfox:mise-plugins/vfox-android-sdk`)
+- `java`
+
+## Quick start
 
 ### 1. Register the plugin
 
@@ -18,92 +30,134 @@ Requires `android-sdk` (recommended `vfox:mise-plugins/vfox-android-sdk`) and `j
 mise plugin install android-sdkmanager https://github.com/chbiel/mise-android-sdkmanager
 ```
 
-or
+or add it in `mise.toml`:
 
 ```toml
 [plugins]
 android-sdkmanager = "https://github.com/chbiel/mise-android-sdkmanager"
 ```
-in your `mise.toml` and run `mise install`.
 
-### 2. Declare tools in your `mise.toml`
-
-```toml
-[tools]
-"android-sdk" = "latest"          # provides sdkmanager and ANDROID_SDK_ROOT
-java = "temurin-17"               # required by sdkmanager
-
-# Ensure `depends` is always configured
-"android-sdkmanager:platform-tools" = { version = "latest", depends = ["android-sdk", "java"] }
-"android-sdkmanager:build-tools"    = { version = "36.0.0", depends = ["android-sdk", "java"] }
-"android-sdkmanager:platforms"      = { version = "android-36", depends = ["android-sdk", "java"] }
-```
-
-Supported tools: `build-tools`, `platforms`, `platform-tools`, `emulator`,
-`system-images`, `ndk`, `cmake`.
-
-### 3. Install
+Then run:
 
 ```bash
 mise install
 ```
 
-## How it works
+### 2. Declare Android tools
 
-- **`hooks/backend_list_versions.lua`** — enumerates available versions for each package
-  family by listing packages from the SDK tool.
-- **`hooks/backend_install.lua`** — installs the requested package via the SDK tool into
-  the plugin's stable SDK root (see below).
-- **`hooks/backend_exec_env.lua`** — pins `ANDROID_SDK_ROOT`/`ANDROID_HOME` to the stable
-  root and adds the installed package's `bin/` directory to `PATH` so tools like `adb`,
-  `emulator`, and NDK scripts are available without manual `_.path` entries in
-  `mise.toml`. It also self-heals (see below).
+```toml
+[tools]
+"android-sdk" = "latest"          # provides cmdline-tools / sdkmanager and ANDROID_SDK_ROOT
+java = "temurin-17"               # required by Android tools
 
-### `sdkmanager` vs. the new `android sdk` command
-
-In newer `cmdline-tools` versions the legacy `sdkmanager` is deprecated in favour of a
-new `android sdk …` command. The plugin handles both:
-
-- It **prefers `sdkmanager`**, so existing cmdline-tools versions (e.g. v20/v21) keep the
-  tested legacy behaviour.
-- It **falls back to `android sdk install`** (which uses `/`-separated package names, e.g.
-  `build-tools/36.0.0`, and needs no interactive license step) whenever `sdkmanager` fails
-  to install a package. Starting with cmdline-tools 22 some packages (e.g. `emulator`) can
-  no longer be installed via `sdkmanager` at all, so the plugin verifies the package
-  landed on disk and retries with the `android` CLI when it did not.
-
-Detection is by binary presence: the modern `android` CLI is searched for inside the
-SDK's `cmdline-tools/*/bin` first, so the long-removed legacy `tools/bin/android` tool is
-never picked up.
-
-### Stable, plugin-owned SDK root
-
-Packages are **not** installed into the `android-sdk` tool's own directory. That
-directory is versioned and owned by the `android-sdk` tool, so upgrading or switching
-`android-sdk` would point `ANDROID_SDK_ROOT` at a fresh, empty directory and the
-previously installed packages would silently disappear.
-
-Instead, the plugin installs every package (via `sdkmanager --sdk_root=…`) into a single
-stable root it owns:
-
-```
-${MISE_DATA_DIR}/android-sdk-tools  # fallback: ~/.local/share/mise/android-sdk-tools
+"android-sdkmanager:platform-tools" = { version = "latest", depends = ["android-sdk", "java"] }
+"android-sdkmanager:build-tools"    = { version = "36.0.0", depends = ["android-sdk", "java"] }
+"android-sdkmanager:platforms"      = { version = "android-36", depends = ["android-sdk", "java"] }
 ```
 
-On activation, `backend_exec_env.lua` exports `ANDROID_SDK_ROOT` and `ANDROID_HOME`
-pointing at this stable root, overriding the value the `android-sdk` dependency sets. The
-`android-sdk` tool is then used purely to provide the `sdkmanager`/`cmdline-tools` binary
-(and `java`), never as the install target.
+### 3. Use the installed tools
 
-Because the stable root never moves when `android-sdk` is upgraded, all packages coexist
-in one unified root — which Gradle/AGP require — and survive tool switches. As a safety
-net, if a tracked package is ever missing from the stable root (e.g. it was deleted),
-`backend_exec_env.lua` transparently reinstalls it on activation.
+After installation, the plugin exposes commands from the installed package directories without manual `_.path` entries. For example, `adb`, `emulator`, and Android build tools become available in the active environment.
 
-## Notes
+## Supported package families
 
-Some sdkmanager dependencies do not have a targetable version, like `emulator` and
-`platform-tools` — sdkmanager only ever offers a single version for them. Use `latest`
-as their required version in `mise.toml`. The plugin reads the real version from
-`sdkmanager --list`, so `latest` resolves to that concrete number (e.g. `36.6.11`)
-and mise records it in the lock file instead of the `latest` alias.
+| Family | Notes |
+| --- | --- |
+| `build-tools` | Common Android build tools, pinned by version |
+| `platforms` | Android API platforms, for example `android-36` |
+| `platform-tools` | Usually versioned as `latest` because sdkmanager exposes one available revision |
+| `emulator` | Same as `platform-tools`: single provided revision |
+| `system-images` | Filters to host-compatible images such as `google_apis_playstore` |
+| `ndk` | Native development kit packages |
+| `cmake` | Android CMake package set |
+
+## Why this plugin exists
+
+Android SDK installs are easy to lose or duplicate when the base `android-sdk` tool is upgraded. The plugin avoids that by separating:
+
+- the `android-sdk` tool, which provides the command-line tooling
+- the plugin-managed installation root, which keeps actual Android packages stable
+
+This matters because Gradle and Android Studio expect a single, stable SDK root.
+
+## Quick overview: how the plugin works
+
+The plugin acts as a `mise` backend for Android SDK packages. In practice, it does three main jobs:
+
+1. It discovers which Android package versions are available for each package family.
+2. It installs the requested package into a stable, plugin-owned SDK root instead of the versioned `android-sdk` tool directory.
+3. It activates the environment so the right Android variables and `PATH` entries are present for the current shell.
+
+The backend is split across a few hooks:
+
+- `hooks/backend_list_versions.lua` — lists available versions for each package family.
+- `hooks/backend_install.lua` — installs the requested package into the plugin's stable SDK root.
+- `hooks/backend_exec_env.lua` — exports `ANDROID_SDK_ROOT` and `ANDROID_HOME`, adds package `bin/` folders to `PATH`, and repairs missing or incomplete packages when the environment loads.
+
+## `sdkmanager` vs. `android sdk`
+
+Newer `cmdline-tools` versions prefer the `android` CLI over the legacy `sdkmanager`. This plugin handles both.
+
+- It prefers the modern `android` binary when present.
+- It falls back to `sdkmanager` if the `android` command is missing or fails.
+- When using `android sdk install`, package names are slash-separated, for example `build-tools/36.0.0`.
+- If the install is incomplete or the command fails, the plugin retries with `sdkmanager`.
+- A directory alone does not count as a successful install; the plugin requires command success, package metadata, and the expected payload.
+
+The plugin detects the right binary by scanning:
+
+1. `ANDROID_SDK_ROOT` / `ANDROID_HOME`
+2. `mise` discovered `cmdline-tools/*/bin`
+3. `PATH`
+
+It prefers the new `android` binary but still falls back cleanly to `sdkmanager`.
+
+## Stable, plugin-owned SDK root
+
+Packages are not installed into the `android-sdk` tool directory itself. That directory is versioned and owned by `android-sdk`, so upgrades or switches would point `ANDROID_SDK_ROOT` at a fresh empty directory and silently drop previously installed packages.
+
+Instead, the plugin installs into a single stable root it owns:
+
+```text
+${MISE_DATA_DIR}/android-sdk-tools
+# fallback: ~/.local/share/mise/android-sdk-tools
+```
+
+On environment activation, `backend_exec_env.lua` overrides the `android-sdk` value so that both `ANDROID_SDK_ROOT` and `ANDROID_HOME` point to the stable root. The `android-sdk` tool is then only used to provide the Android command-line tooling and `java`.
+
+Because that root stays fixed across upgrades, all packages coexist in one unified location, which is what Gradle and AGP expect. If a tracked package disappears from the stable root, the plugin tries to reinstall it when the hook runs. Incomplete packages are also repaired, and any repair failure is reported as a warning instead of blocking activation.
+
+## Common gotchas
+
+### `latest` for some package families
+
+Some Android package families do not have a meaningful targetable revision, including `emulator` and `platform-tools`. In those cases, use `latest` in `mise.toml`.
+
+The plugin reads the real installed version from `sdkmanager --list`, so `latest` resolves to a concrete revision such as `36.6.11` and the lock file stores that exact value. If the installed revision differs from the resolved lock-file version, installation fails and shows both values. Refresh the configured or locked version before retrying.
+
+### Shared installation
+
+These package families share a single install root and cannot provide isolated pinned versions across projects:
+
+- `platform-tools`
+- `emulator`
+
+### `system-images`
+
+`system-images` only lists API levels that offer `google_apis_playstore` for the current host ABI. On ARM64, the plugin prefers `arm64-v8a`; otherwise it uses `x86_64`.
+
+## Development
+
+Run:
+
+```bash
+mise run test --unit
+```
+
+for offline regression coverage.
+
+The broader test command also runs isolated integration tests, which download Java and Android SDK packages:
+
+```bash
+mise run test
+```

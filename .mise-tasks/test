@@ -15,6 +15,10 @@ fail() { echo "✗ $1"; FAIL=$((FAIL + 1)); }
 # cache, and config are never touched.
 MISE_TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$MISE_TEST_DIR"' EXIT
+lua "$PLUGIN_DIR/tests/regression.lua" "$PLUGIN_DIR" "$MISE_TEST_DIR"
+if [[ "${1:-}" == "--unit" ]]; then
+    exit 0
+fi
 export MISE_DATA_DIR="$MISE_TEST_DIR/data"
 export MISE_CACHE_DIR="$MISE_TEST_DIR/cache"
 export MISE_IGNORED_CONFIG_PATHS="${HOME}/.config/mise/config.toml:${HOME}/.config/mise.toml"
@@ -91,16 +95,17 @@ if mise install "${PLUGIN}:platform-tools@latest"; then
     else
         fail "exec-env: adb not found on PATH after install"
     fi
+
 else
     fail "install platform-tools@latest"
 fi
 
-# ── 6. install emulator (sdkmanager → android CLI fallback) ──────────────────
+# ── 6. install emulator (modern Android CLI) ─────────────────────────────────
 # Starting with cmdline-tools 22, `emulator` can no longer be installed via
 # sdkmanager and requires `android sdk install`. Verify the plugin installs it
-# (falling back to the android CLI when needed) and puts it on PATH.
+# using the preferred android CLI and puts it on PATH.
 echo ""
-echo "=== install emulator (cmdline-tools 22 fallback) ==="
+echo "=== install emulator (modern Android CLI) ==="
 if mise install "${PLUGIN}:emulator@latest"; then
     pass "install emulator@latest"
 
