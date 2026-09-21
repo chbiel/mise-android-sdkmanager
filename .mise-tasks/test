@@ -22,6 +22,9 @@ fi
 export SDK_TEST_LUA
 MISE_TEST_DIR=$(mktemp -d "$PLUGIN_DIR/.test.XXXXXXXX")
 trap 'rm -rf -- "$MISE_TEST_DIR"' EXIT
+mkdir "$MISE_TEST_DIR/scratch"
+export TMPDIR="$MISE_TEST_DIR/scratch"
+export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-Djava.io.tmpdir=$TMPDIR"
 export MISE_DATA_DIR="$MISE_TEST_DIR/unit-data"
 export MISE_CACHE_DIR="$MISE_TEST_DIR/cache"
 export MISE_CONFIG_DIR="$MISE_TEST_DIR/config"
@@ -88,6 +91,8 @@ pass "android-sdk + java installed"
 
 eval "$(mise env --shell bash)"
 pass "android-sdk env loaded (ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>})"
+dependency_root=$(mise where android-sdk)
+export SDK_TEST_DEPENDENCY_ROOT="$dependency_root"
 
 if [[ "${1:-}" == "--sdk-stress" ]]; then
     sdk_tools=(
@@ -99,13 +104,22 @@ if [[ "${1:-}" == "--sdk-stress" ]]; then
     mise install --jobs 4 "${sdk_tools[@]}"
     mise exec "${sdk_tools[@]}" -- sh -eu -c '
         test "$ANDROID_HOME" = "$ANDROID_SDK_ROOT"
+        test "$ANDROID_HOME" = "$SDK_TEST_DEPENDENCY_ROOT"
         test -f "$ANDROID_HOME/build-tools/36.0.0/aapt"
         test -f "$ANDROID_HOME/platforms/android-36/android.jar"
         test -f "$ANDROID_HOME/ndk/28.2.13676358/ndk-build"
         test -f "$ANDROID_HOME/cmake/3.22.1/bin/cmake"
         test ! -e "$ANDROID_HOME/.mise-install-lock"
+        test ! -L "$ANDROID_HOME/cmdline-tools"
+        test ! -e "$ANDROID_HOME/.mise-cmdline-tools"
     '
     pass "cold parallel SDK installs and warm activation"
+    mkdir archive
+    printf 'SDK root regression\n' > archive/expected.txt
+    mise exec -- jar --create --file minimal.apk --no-manifest -C archive expected.txt
+    mise exec "${sdk_tools[@]}" -- apkanalyzer files list minimal.apk > apkanalyzer-files.log
+    grep -q '/expected.txt' apkanalyzer-files.log
+    pass "real apkanalyzer 20.0 lists archive contents using dependency build-tools"
     exit 0
 fi
 
@@ -165,7 +179,7 @@ if mise install "${PLUGIN}:platform-tools@latest"; then
     '; then
         pass "exec-env: command-line tools inside SDK root can list installed packages"
     else
-        fail "exec-env: command-line tools missing or cannot list stable-root packages"
+        fail "exec-env: command-line tools missing or cannot list dependency-root packages"
     fi
 
 else

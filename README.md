@@ -1,6 +1,6 @@
 # android-sdkmanager
 
-A [mise backend plugin](https://mise.jdx.dev/backend-plugin-development.html) for Android SDK packages. It wraps `sdkmanager` and the modern `android sdk` CLI, keeps packages in a shared SDK root, and exports their environment and executable paths.
+A [mise backend plugin](https://mise.jdx.dev/backend-plugin-development.html) for Android SDK packages. It wraps `sdkmanager` and the modern `android sdk` CLI, installs packages inside the selected `android-sdk` dependency, and exports their environment and executable paths.
 
 Requires Linux or macOS, a POSIX shell, and configured `android-sdk` and `java` tools. Windows is not supported.
 
@@ -80,28 +80,47 @@ For platforms and images, an API identifier such as `android-36` does not pin an
 
 ## SDK root and command-line tools
 
-Packages live outside the versioned `android-sdk` dependency:
+The `android-sdk` dependency owns the versioned SDK root and command-line tools. This plugin manages packages inside that same root:
 
 ```text
-${MISE_DATA_DIR}/android-sdk-tools
-# fallback: ~/.local/share/mise/android-sdk-tools
+<selected android-sdk installation>/
+  cmdline-tools/<version>/bin/
+  build-tools/36.0.0/
+  platforms/android-36/
+  platform-tools/
 ```
 
-The plugin exports this path as both `ANDROID_HOME` and `ANDROID_SDK_ROOT`. SDK packages survive command-line tools upgrades, but the root remains shared across projects: singleton revisions and tooling links are not project-isolated.
+The plugin and dependency agree on `ANDROID_HOME` and `ANDROID_SDK_ROOT`. Packages follow the dependency's lifecycle: removing its installation can remove its packages. Projects selecting the same dependency installation still share packages, including singleton revisions; this is not project isolation.
 
-Tooling comes from the selected dependency's `PATH`, not a scan for the highest installed version. An inherited Android SDK environment variable does not override this selection. To select a specific installation, add an absolute `cmdline_tools` path:
+The plugin discovers the selected dependency through its injected `PATH`, not a scan for the highest installed version, a receipt, or inherited Android SDK variables. The physical tools directory must have the standard `<sdk-root>/cmdline-tools/<version>` layout. Nonstandard layouts fail with a dependency diagnostic.
 
-```toml
-"android-sdkmanager:build-tools" = { version = "36.0.0", cmdline_tools = "/opt/android/cmdline-tools/20.0", depends = ["android-sdk", "java"] }
-```
+The plugin prefers a capable `android sdk` CLI, falling back to `sdkmanager` from the same installation when necessary. All installers and license acceptance target that SDK root explicitly.
 
-This changes the installer source, not the SDK destination or prerequisite declarations. The plugin prefers a capable `android sdk` CLI, falling back to `sdkmanager` from the same source when necessary.
+The plugin never copies, provisions, or links command-line tools. Keeping tools and packages together lets tools such as `apkanalyzer`, which derive their SDK root from their physical location, find installed build-tools.
 
-Explicit installation exposes the dependency's complete `cmdline-tools` tree through managed links inside the SDK root, allowing Flutter to find it. It refreshes those links when needed but preserves user-owned directories and links, reporting a conflict if they are incomplete.
+### Migration from the separate shared root
+
+1. Update this plugin.
+2. Remove every `cmdline_tools` option. The option now fails with a migration error; select the desired `android-sdk` version instead.
+3. Install the selected `android-sdk` and `java` dependencies.
+4. Force-install **all configured package tools** without appending `@version`. This preserves their configured options and multiple versions:
+
+   ```bash
+   mise install android-sdk java
+   mise install --force android-sdkmanager:build-tools android-sdkmanager:platforms android-sdkmanager:platform-tools
+   ```
+
+   Include your configured emulator, NDK, CMake, and system-image identities as applicable. For a renamed registration, use commands such as `mise install --force jds-sdkmanager:build-tools`.
+
+5. Remove or update stale `flutter config --android-sdk` settings, `local.properties` SDK paths, and hardcoded environment or PATH overrides that still select `${MISE_DATA_DIR}/android-sdk-tools`.
+
+The old shared root, packages, licenses, and tooling links remain untouched. Nothing is moved, copied, uninstalled, or deleted automatically. Decide whether to remove that root only after checking other consumers.
+
+Repeat the explicit force-install step after future `android-sdk` version switches. Existing mise package records do not prove that packages exist in the newly selected SDK. Plain `mise install` can skip those records; activation does not repair them. Mise may cache activation results and warnings until explicit reinstall.
 
 ## Activation and recovery
 
-**Activation is read-only.** Unlike older plugin versions, it does not download packages, accept licenses, repair links, or wait for the installation lock. It warns about detected missing files without blocking activation. Mise caches environment results, so these warnings are not continuous integrity checks.
+**Activation is read-only.** It does not execute Android tools, download packages, accept licenses, write receipts, or wait for the installation lock. It warns about detected missing package files without blocking activation, naming the affected SDK root and an explicit force-install command. Mise caches environment results, so these warnings are not continuous integrity checks.
 
 Retry an affected configured tool explicitly:
 
@@ -109,15 +128,15 @@ Retry an affected configured tool explicitly:
 mise install --force android-sdkmanager:build-tools
 ```
 
-Without `@version`, mise preserves that tool's configured requests and options. It recreates the per-tool record, not the shared SDK. The plugin refreshes tooling links and reuses healthy side-by-side packages without downloading them again. Singleton packages are reused when their revision matches; otherwise an installer attempt allows upgrades.
+Without `@version`, mise preserves that tool's configured requests and options. It recreates the per-tool record, not the SDK. The plugin validates packages in the selected dependency and reuses healthy side-by-side packages without downloading them again. Packages in a previously selected SDK cannot satisfy validation. Singleton packages are reused when their revision matches; otherwise an installer attempt allows upgrades.
 
 Plain `mise install` can skip a damaged package if mise still records it as installed. Force-install retries missing payloads, but SDK metadata can make the installer consider an incomplete package already installed. In that case, inspect the reported files, `source.properties`, `package.xml`, and installed-package listing. The plugin does not automatically uninstall shared packages, delete metadata, or wipe the SDK.
 
-Successful installation requires valid metadata and the expected payload; failed commands are never accepted merely because files exist. An atomic `.mise-sdk-package.json` receipt records the package, resolved and observed revisions, SDK root, and tooling source. Legacy `.installed` markers remain compatible and are not migrated during activation. Removing a mise installation leaves shared SDK packages intact.
+Successful installation requires valid metadata and the expected payload; failed commands are never accepted merely because files exist. An atomic `.mise-sdk-package.json` receipt records the package, resolved and observed revisions, SDK root, and tooling source. Receipts never select the installation root. Legacy `.installed` markers remain compatible and are not migrated during activation. Removing a package tool's mise record leaves SDK packages intact; removing the `android-sdk` dependency can remove them.
 
 ### CI caches
 
-Use the same single `mise install` for clean runners and intact restored installations. Cache the shared SDK payload, mise's installation records, and the command-line tools dependency together. Keep restored paths consistent so tooling links remain valid. Include OS and architecture in cache keys, and exclude `.mise-install-lock` and its contents.
+Use the same single `mise install` for clean runners and intact restored installations. Cache the selected `android-sdk` dependency, including its packages, together with mise's package records. Key caches by Android SDK and Java versions, configured package versions, OS, and architecture. Keep restored paths consistent and exclude `.mise-install-lock` and its contents.
 
 A cache containing only mise records cannot restore SDK files. If your pipeline needs explicit validation after restoration, optionally force-install its configured Android package tools:
 
@@ -138,7 +157,7 @@ sdkmanager --sdk_root="$ANDROID_HOME" --list_installed
 flutter doctor -v
 ```
 
-Pass `--sdk_root` explicitly: otherwise sdkmanager can inspect its own installation root. For a missing managed tooling link, force-install one configured package to refresh it. Do not hardcode `ANDROID_HOME` to the versioned dependency.
+Pass `--sdk_root` explicitly to avoid inspecting a stale inherited SDK. The values must match the selected `android-sdk` installation. If command-line tools are missing, repair the dependency rather than creating external tools links. For license problems, run `sdkmanager --sdk_root="$ANDROID_HOME" --licenses` in this same environment after stopping other SDK writers.
 
 ## Concurrent installation and locks
 
@@ -156,5 +175,5 @@ Normal completion and errors release it, but abrupt termination can leave a lock
 | --- | --- |
 | `mise run test --unit` | Offline Lua regression and cross-process locking |
 | `mise run test --runtime` | Also exercises actual mise with fake SDK installers |
-| `mise run test --sdk-stress` | Also downloads SDK tools 20.0, Java 21, build-tools 36.0.0, platform android-36, NDK 28.2.13676358, and CMake 3.22.1 for concurrent installs and warm activation |
+| `mise run test --sdk-stress` | Also downloads SDK tools 20.0, Java 21, build-tools 36.0.0, platform android-36, NDK 28.2.13676358, and CMake 3.22.1 for concurrent installs, warm activation, and real `apkanalyzer files list` on a minimal archive |
 | `mise run test` | Unit/runtime coverage plus real version discovery, platform-tools, and emulator installation |

@@ -3,13 +3,13 @@ require("utils")
 ---@param ctx BackendListVersionsCtx
 function PLUGIN:BackendListVersions(ctx) -- luacheck: ignore
     local tool = ctx.tool
-    local options = require("packages").options(tool, ctx.options)
+    require("packages").options(tool, ctx.options)
     local sdk_tools = require("sdk_tools")
-    local selected = sdk_tools.resolve(options)
+    local selected = sdk_tools.resolve()
     local errors = {}
 
     for _, info in ipairs(selected.tools) do
-        local ok, output = pcall(sdk_tools.list, info, sdk_install_root())
+        local ok, output = pcall(sdk_tools.list, info, selected.root)
         if ok then
             local versions = parse_versions(tool, output)
             if #versions > 0 then

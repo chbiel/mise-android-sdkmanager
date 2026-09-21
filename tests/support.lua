@@ -6,9 +6,7 @@ end
 
 function M.readonly_command(command)
     local normalized = command:gsub("'[^'\n]+'", "'ROOT'")
-    return normalized
-        == "for binary in 'ROOT'/*/bin/sdkmanager 'ROOT'/*/bin/android; do\n"
-            .. 'if [ -f "$binary" ]; then printf found; break; fi\ndone'
+    return normalized == "cd 'ROOT' && pwd -P"
 end
 
 function M.exec(command, options)

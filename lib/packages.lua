@@ -107,6 +107,11 @@ end
 
 function M.options(tool, options)
     options = options or {}
+    if options.cmdline_tools ~= nil then
+        error(
+            "cmdline_tools has been removed; remove this option and select the android-sdk dependency version instead"
+        )
+    end
     local package = M.describe(tool)
     local strict = options.strict_revision
     -- Older mise releases stringify TOML booleans before passing backend options.
@@ -123,12 +128,7 @@ function M.options(tool, options)
             error("strict_revision is only supported for platform-tools and emulator")
         end
     end
-    if options.cmdline_tools ~= nil then
-        if type(options.cmdline_tools) ~= "string" or options.cmdline_tools:sub(1, 1) ~= "/" then
-            error("cmdline_tools must be an absolute path to a cmdline-tools/<version> directory")
-        end
-    end
-    return { strict_revision = strict, cmdline_tools = options.cmdline_tools }
+    return { strict_revision = strict }
 end
 
 function M.directory(root, package)

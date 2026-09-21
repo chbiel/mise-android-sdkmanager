@@ -18,19 +18,6 @@ function valid_sdk_revision(version) -- luacheck: ignore
     return packages.valid_revision(version)
 end
 
-function sdk_install_root() -- luacheck: ignore
-    local file = require("file")
-    local data_dir = os.getenv("MISE_DATA_DIR")
-    if not data_dir or data_dir == "" then
-        local home = os.getenv("HOME")
-        if not home or home == "" then
-            error("Set MISE_DATA_DIR or HOME to locate the shared Android SDK")
-        end
-        data_dir = file.join_path(home, ".local", "share", "mise")
-    end
-    return file.join_path(data_dir, "android-sdk-tools")
-end
-
 function build_package_name(tool, version) -- luacheck: ignore
     return packages.describe(tool, version).id
 end
@@ -66,7 +53,7 @@ function install_package(tool, version, sdk_root, options, selected) -- luacheck
     end
 
     local sdk_tools = require("sdk_tools")
-    selected = selected or sdk_tools.resolve(options)
+    selected = selected or sdk_tools.resolve()
     local errors = {}
     for _, info in ipairs(selected.tools) do
         local ok, output = sdk_tools.install(info, package.id, sdk_root)

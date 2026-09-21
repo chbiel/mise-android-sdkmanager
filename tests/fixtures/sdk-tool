@@ -7,6 +7,8 @@ source_dir=$(cd "$(dirname "$0")/.." && pwd -P)
 printf '%s|%s|%s\n' "$source_dir" "$tool" "$*" >> "$SDK_TEST_LOG"
 
 if [[ "$tool" == android && "${1:-} ${2:-}" == "sdk --help" ]]; then
+    [[ "${ANDROID_HOME:-}" == "${source_dir%/cmdline-tools/*}" && "${ANDROID_SDK_ROOT:-}" == "$ANDROID_HOME" ]] \
+        || { echo "Conflicting probe SDK environment" >&2; exit 66; }
     if [[ "${SDK_TEST_LEGACY_ANDROID:-0}" == 1 ]]; then
         echo "Legacy Android project manager"
         exit "${SDK_TEST_HELP_STATUS:-0}"
@@ -35,10 +37,13 @@ else
     done
 fi
 [[ -n "$root" ]] || { echo "Missing explicit SDK root" >&2; exit 65; }
-[[ "$root" == "$MISE_DATA_DIR/android-sdk-tools" ]] || {
+[[ "$root" == "${source_dir%/cmdline-tools/*}" ]] || {
     echo "Wrong SDK root: $root" >&2
     exit 66
 }
+if [[ "$tool" == android ]]; then
+    [[ "$ANDROID_HOME" == "$root" ]] || { echo "Conflicting SDK environment" >&2; exit 66; }
+fi
 
 if [[ "$action" == list ]]; then
     if [[ "$tool" == android && " $* " != *" sdk list --all --all-versions "* ]]; then

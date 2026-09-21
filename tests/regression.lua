@@ -6,6 +6,7 @@ local support = dofile(plugin .. "/tests/support.lua")
 support.setup(plugin)
 dofile(plugin .. "/hooks/backend_list_versions.lua")
 dofile(plugin .. "/hooks/backend_exec_env.lua")
+dofile(plugin .. "/hooks/backend_install.lua")
 
 local count = 0
 local function test(name, callback)
@@ -14,6 +15,19 @@ local function test(name, callback)
     print("PASS: " .. name)
 end
 local equal, raises = support.equal, support.raises
+local selected_root = parent .. "/selected-sdk"
+local selected_directory = selected_root .. "/cmdline-tools/20.0"
+support.exec("mkdir -p " .. support.quote(selected_directory .. "/bin"))
+support.write(selected_directory .. "/bin/sdkmanager", "must not execute")
+local getenv = os.getenv
+local environment = {
+    PATH = selected_directory .. "/bin:" .. (getenv("PATH") or ""),
+    ANDROID_HOME = parent .. "/old-shared-root",
+    ANDROID_SDK_ROOT = parent .. "/unselected-sdk",
+}
+os.getenv = function(key)
+    return environment[key] or getenv(key)
+end
 local function versions(tool, output)
     return table.concat(parse_versions(tool, output), ",")
 end
@@ -127,10 +141,12 @@ test("hook option validation happens before tooling discovery", function()
     raises(function()
         PLUGIN:BackendListVersions({ tool = "build-tools", options = { strict_revision = true } })
     end, "only supported")
-    for _, value in ipairs({ false, 10, "relative/tools" }) do
-        raises(function()
-            PLUGIN:BackendListVersions({ tool = "emulator", options = { cmdline_tools = value } })
-        end, "cmdline_tools must be an absolute path")
+    for _, value in ipairs({ false, 10, "relative/tools", "/sdk/cmdline-tools/20.0" }) do
+        for _, hook in ipairs({ PLUGIN.BackendListVersions, PLUGIN.BackendInstall, PLUGIN.BackendExecEnv }) do
+            raises(function()
+                hook(PLUGIN, { tool = "emulator", version = "36.2.1", options = { cmdline_tools = value } })
+            end, "cmdline_tools has been removed")
+        end
     end
 end)
 
@@ -158,7 +174,7 @@ test("payload and revision metadata validation", function()
 end)
 
 test("activation is read-only, nonfatal, and keeps legacy records", function()
-    local root = sdk_install_root()
+    local root = selected_root
     support.exec(
         "mkdir -p " .. support.quote(root .. "/.mise-install-lock") .. " " .. support.quote(directory .. "/record")
     )
@@ -186,7 +202,7 @@ test("activation is read-only, nonfatal, and keeps legacy records", function()
 end)
 
 test("healthy activation does not execute installers or acquire locks", function()
-    local root = sdk_install_root()
+    local root = selected_root
     support.exec(
         "mkdir -p " .. support.quote(root .. "/platform-tools") .. " " .. support.quote(root .. "/cmdline-tools/20/bin")
     )
@@ -220,6 +236,32 @@ test("healthy activation does not execute installers or acquire locks", function
         table.concat(support.warnings):find("differs from mise", 1, true),
         "activation should warn about revision drift"
     )
+end)
+
+test("selected PATH wins over inherited roots and canonical aliases agree", function()
+    local tools = require("sdk_tools")
+    equal(tools.locate().root, selected_root)
+    local alias = parent .. "/sdk-alias"
+    support.exec("ln -s " .. support.quote(selected_root) .. " " .. support.quote(alias))
+    local previous = environment.PATH
+    environment.PATH = alias .. "/cmdline-tools/20.0/bin:" .. previous
+    equal(tools.locate().root, selected_root)
+    equal(tools.locate().directory, selected_directory)
+    environment.PATH = "/usr/bin:/bin"
+    raises(tools.locate, "install the configured android-sdk and java dependencies")
+    environment.PATH = previous
+end)
+
+test("nonstandard physical tools layout fails rather than splitting roots", function()
+    local physical = parent .. "/nonstandard-tools"
+    local alias = parent .. "/nonstandard-sdk/cmdline-tools"
+    support.exec("mkdir -p " .. support.quote(physical .. "/bin") .. " " .. support.quote(alias))
+    support.write(physical .. "/bin/sdkmanager", "must not execute")
+    support.exec("ln -s " .. support.quote(physical) .. " " .. support.quote(alias .. "/20"))
+    local previous = environment.PATH
+    environment.PATH = alias .. "/20/bin"
+    raises(require("sdk_tools").locate, "unsupported physical layout")
+    environment.PATH = previous
 end)
 
 test("plugin declares discovery dependencies", function()

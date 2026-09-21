@@ -1,36 +1,45 @@
 local M = {}
 
 --- Select one dependency installation, never the highest version in the mise store.
-function M.resolve(options)
+function M.locate()
     local file = require("file")
     local cmd = require("cmd")
     if RUNTIME.osType == "windows" then
         error("android-sdkmanager requires a POSIX shell (Linux or macOS)")
     end
-    local directory = options and options.cmdline_tools
-    if directory then
-        directory = directory:gsub("/+$", "")
-    else
-        for entry in ((os.getenv("PATH") or "") .. ":"):gmatch("(.-):") do
-            if entry:match("^/.*/cmdline%-tools/[^/]+/bin/?$") then
-                if
-                    file.exists(file.join_path(entry, "sdkmanager")) or file.exists(file.join_path(entry, "android"))
-                then
-                    directory = entry:gsub("/+$", ""):gsub("/bin$", "")
-                    break
-                end
+    local directory
+    for entry in ((os.getenv("PATH") or "") .. ":"):gmatch("(.-):") do
+        if entry:match("^/.*/cmdline%-tools/[^/]+/bin/?$") then
+            if file.exists(file.join_path(entry, "sdkmanager")) or file.exists(file.join_path(entry, "android")) then
+                directory = entry:gsub("/+$", ""):gsub("/bin$", "")
+                break
             end
         end
     end
     if not directory or not directory:match("^/.*/cmdline%-tools/[^/]+$") then
         error(
             "Cannot locate selected Android command-line tools: install the configured android-sdk and java dependencies; "
-                .. "or set cmdline_tools to an absolute cmdline-tools/<version> directory"
+                .. "and ensure the selected android-sdk exports cmdline-tools/<version>/bin on PATH"
         )
     end
-    local source = directory:match("^(.*)/[^/]+$")
-    -- Canonicalize the selected directory while retaining its complete cmdline-tools tree.
     local canonical = cmd.exec("cd " .. shell_quote(directory) .. " && pwd -P"):gsub("\n$", "")
+    local root = canonical:match("^(.+)/cmdline%-tools/[^/]+$")
+    if not root then
+        error(
+            "Selected android-sdk has an unsupported physical layout: "
+                .. canonical
+                .. ". Select an android-sdk dependency containing cmdline-tools/<version> inside its SDK root"
+        )
+    end
+    return { directory = canonical, root = root }
+end
+
+--- Capability probes are only allowed during explicit discovery and installation.
+function M.resolve()
+    local file = require("file")
+    local cmd = require("cmd")
+    local selected = M.locate()
+    local canonical = selected.directory
     local tools = {}
     local android = file.join_path(canonical, "bin", "android")
     local sdkmanager = file.join_path(canonical, "bin", "sdkmanager")
@@ -43,7 +52,8 @@ function M.resolve(options)
                 .. shell_quote(android)
                 .. " sdk --help 2>&1); then status=0; else status=$?; fi\n"
                 .. 'case "$status" in\n0|2) printf \'%s\\n\' "$output";;\n'
-                .. '*) printf \'%s\\n\' "$output" >&2; exit "$status";;\nesac'
+                .. '*) printf \'%s\\n\' "$output" >&2; exit "$status";;\nesac',
+            { env = { ANDROID_HOME = selected.root, ANDROID_SDK_ROOT = selected.root } }
         )
         if ok and output:find("install", 1, true) and output:find("list", 1, true) then
             table.insert(tools, { path = android, kind = "android" })
@@ -60,68 +70,8 @@ function M.resolve(options)
     if probe_failure then
         require("log").warn(probe_failure .. "\nUsing sdkmanager from the same command-line tools installation")
     end
-    return { directory = canonical, source = source, tools = tools }
-end
-
---- A bounded, read-only check of the exposed SDK layout; never probes executables.
-function M.exposed(sdk_root)
-    local file = require("file")
-    local directory = file.join_path(sdk_root, "cmdline-tools")
-    if not file.exists(directory) then
-        return false
-    end
-    -- Shell file tests also handle regular files and dangling links among version directories.
-    local result = require("cmd").exec(
-        "for binary in "
-            .. shell_quote(directory)
-            .. "/*/bin/sdkmanager "
-            .. shell_quote(directory)
-            .. '/*/bin/android; do\nif [ -f "$binary" ]; then printf found; break; fi\ndone'
-    )
-    return result == "found"
-end
-
---- Caller holds the SDK-root lock. Preserve every user-owned cmdline-tools path.
-function M.expose(sdk_root, selected)
-    local cmd = require("cmd")
-    local file = require("file")
-    local destination = file.join_path(sdk_root, "cmdline-tools")
-    local target = cmd.exec(
-        "if [ -L " .. shell_quote(destination) .. " ]; then readlink " .. shell_quote(destination) .. "; fi"
-    ):gsub("\n$", "")
-    if target ~= ".mise-cmdline-tools" and (target ~= "" or file.exists(destination)) then
-        if M.exposed(sdk_root) then
-            return
-        end
-        error("Cannot expose cmdline-tools: existing user-owned path is incomplete: " .. destination)
-    end
-    cmd.exec(
-        "set -eu\nroot=$(cd "
-            .. shell_quote(sdk_root)
-            .. " && pwd -P)\nsource=$(cd "
-            .. shell_quote(selected.source)
-            .. " && pwd -P)\n"
-            .. [[
-case "$source/" in
-    "$root/"*) echo "Cannot link cmdline-tools from inside the stable SDK root" >&2; exit 1 ;;
-esac
-cd "$root"
-if [ -e .mise-cmdline-tools ] && [ ! -L .mise-cmdline-tools ]; then
-    echo "Cannot replace user-owned .mise-cmdline-tools directory" >&2
-    exit 1
-fi
-if [ "$(readlink .mise-cmdline-tools 2>/dev/null || :)" != "$source" ]; then
-    ln -sfn "$source" .mise-cmdline-tools
-fi
-if [ ! -L cmdline-tools ] && [ ! -e cmdline-tools ]; then
-    ln -sn .mise-cmdline-tools cmdline-tools
-fi
-if [ "$(readlink cmdline-tools)" != .mise-cmdline-tools ]; then
-    echo "Cannot replace user-owned cmdline-tools path" >&2
-    exit 1
-fi
-]]
-    )
+    selected.tools = tools
+    return selected
 end
 
 function M.format_package(kind, package_name)

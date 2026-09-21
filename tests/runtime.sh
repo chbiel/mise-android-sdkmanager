@@ -43,12 +43,12 @@ expect_failure() {
 write_config() {
     cat > "$MISE_CONFIG_FILE" <<EOF
 [tool_alias.android-sdk]
-backend = "asdf:android-sdk"
+backend = "vfox:android-sdk"
 [tool_alias.java]
 backend = "asdf:java"
 [tools]
-android-sdk = "20.0.0"
-java = "17.0.0"
+android-sdk = "${sdk_version:-20.0.0}"
+java = "${java_version:-17.0.0}"
 $1
 [settings]
 experimental = true
@@ -73,27 +73,30 @@ assert_receipt() {
 
 write_config '"android-sdkmanager:build-tools" = "36.0.0"'
 run plugin link android-sdkmanager "$plugin" > "$root/link.log" 2>&1
-run plugin link android-sdk "$plugin/tests/fixtures/dependency" >> "$root/link.log" 2>&1
+run plugin link android-sdk "$plugin/tests/fixtures/android-sdk" >> "$root/link.log" 2>&1
 run plugin link java "$plugin/tests/fixtures/dependency" >> "$root/link.log" 2>&1
 expect_failure "install the configured android-sdk and java dependencies" run ls-remote android-sdkmanager:build-tools
 run install android-sdk java > "$root/dependencies.log" 2>&1 || { cat "$root/dependencies.log" >&2; exit 1; }
 run install > "$root/install.log" 2>&1 || { cat "$root/install.log" >&2; exit 1; }
-sdk="$MISE_DATA_DIR/android-sdk-tools"
-selected="$MISE_DATA_DIR/installs/android-sdk/20.0.0/cmdline-tools/20.0.0"
+sdk="$MISE_DATA_DIR/installs/android-sdk/20.0.0"
+selected="$sdk/cmdline-tools/20.0.0"
 record=$(record_for android-sdkmanager:build-tools)
 assert_receipt "$record" 'build-tools;36.0.0' 36.0.0 "$selected"
 [[ -x "$MISE_DATA_DIR/installs/java/17.0.0/bin/java" ]] || die "Java dependency was not installed"
-[[ "$(readlink -f "$sdk/cmdline-tools")" == "${selected%/*}" ]] || die "wrong command-line tools link"
-[[ -f "$sdk/cmdline-tools/20.0.0/lib/fixture.jar" ]] || die "incomplete linked tooling tree"
+[[ ! -L "$sdk/cmdline-tools" && ! -e "$sdk/.mise-cmdline-tools" ]] || die "plugin linked command-line tools"
+[[ -f "$sdk/cmdline-tools/20.0.0/lib/fixture.jar" ]] || die "incomplete tooling tree"
+find "$sdk/cmdline-tools" -type f -exec sha256sum {} + | sort > "$root/tools-before"
 [[ ! -e "$sdk/.mise-install-lock" ]] || die "install leaked SDK lock"
 pass "cold bootstrap diagnostics, dependency-first install, complete tooling tree, and atomic receipt"
 
 run install android-sdk@99.0.0 > "$root/newer.log" 2>&1
 before=$(install_count)
-ANDROID_HOME="$sdk" ANDROID_SDK_ROOT="$sdk" run install --force android-sdkmanager:build-tools > "$root/force.log" 2>&1
+ANDROID_HOME="$MISE_DATA_DIR/android-sdk-tools" ANDROID_SDK_ROOT="$MISE_DATA_DIR/installs/android-sdk/99.0.0" \
+    PATH="$MISE_DATA_DIR/installs/android-sdk/99.0.0/cmdline-tools/99.0.0/bin:$PATH" \
+    run install --force android-sdkmanager:build-tools > "$root/force.log" 2>&1
 [[ "$(install_count)" == "$before" ]] || die "healthy side-by-side package reinstalled"
 assert_receipt "$(record_for android-sdkmanager:build-tools)" 'build-tools;36.0.0' 36.0.0 "$selected"
-[[ "$(readlink -f "$sdk/cmdline-tools")" == "${selected%/*}" ]] || die "highest dependency selected instead of configured version"
+[[ ! -e "$MISE_DATA_DIR/installs/android-sdk/99.0.0/build-tools" ]] || die "unselected dependency modified"
 pass "force-install reuses payload and ignores unselected newer dependency"
 
 before=$(wc -l < "$SDK_TEST_LOG")
@@ -115,7 +118,7 @@ fi
 versions=$(SDK_TEST_LEGACY_ANDROID=1 SDK_TEST_HELP_STATUS=2 run ls-remote android-sdkmanager:emulator)
 [[ "$versions" == 36.2.1 ]] || die "sdkmanager fallback listing failed: $versions"
 assert_contains "$SDK_TEST_LOG" "--sdk_root=$sdk --list"
-pass "help status 2 accepted, status 23 rejected; numeric listing excludes installed revisions and targets shared root"
+pass "help status 2 accepted, status 23 rejected; listing targets selected dependency root"
 
 write_config '"android-sdkmanager:system-images/google_apis/arm64-v8a" = "android-36"
 "android-sdkmanager:system-images/google_apis_playstore/x86_64" = "android-34"'
@@ -131,26 +134,25 @@ x86_versions=$(run ls-remote android-sdkmanager:system-images/google_apis_playst
 [[ "$(run ls-remote android-sdkmanager:system-images/google_apis/arm64-v8a)" == "$arm_versions" ]] || die "warm image cache changed"
 pass "explicit image installation and version cache identities remain separate"
 
-override="$root/override/cmdline-tools/21.0.0"
-mkdir -p "$override/bin" "$override/lib"
-cp "$plugin/tests/fixtures/sdk-tool" "$override/bin/android"
-cp "$plugin/tests/fixtures/sdk-tool" "$override/bin/sdkmanager"
-chmod +x "$override/bin/android" "$override/bin/sdkmanager"
-write_config "\"android-sdkmanager:platform-tools\" = { version = \"35.0.0\", strict_revision = true, cmdline_tools = \"$override\" }"
+write_config '"android-sdkmanager:platform-tools" = { version = "35.0.0", cmdline_tools = "/old/cmdline-tools/20" }'
+before=$(wc -l < "$SDK_TEST_LOG")
+expect_failure "cmdline_tools has been removed" run install
+[[ "$(wc -l < "$SDK_TEST_LOG")" == "$before" ]] || die "retired option executed installer"
+write_config '"android-sdkmanager:platform-tools" = { version = "35.0.0", strict_revision = true }'
 expect_failure strict_revision run install
 [[ -z "$(find "$MISE_DATA_DIR/installs" -path '*platform-tools*/.mise-sdk-package.json' -print)" ]] || die "failed strict install wrote success receipt"
-write_config "\"android-sdkmanager:platform-tools\" = { version = \"35.0.0\", strict_revision = false, cmdline_tools = \"$override\" }"
+write_config '"android-sdkmanager:platform-tools" = { version = "35.0.0", strict_revision = false }'
 run install > "$root/advisory.log" 2>&1
 assert_contains "$root/advisory.log" "differs from mise"
 pt_record=$(record_for android-sdkmanager:platform-tools)
-assert_receipt "$pt_record" platform-tools 35.0.0 "$override"
-write_config "\"android-sdkmanager:platform-tools\" = { version = \"35.0.0\", strict_revision = true, cmdline_tools = \"$override\" }"
+assert_receipt "$pt_record" platform-tools 35.0.0 "$selected"
+write_config '"android-sdkmanager:platform-tools" = { version = "35.0.0", strict_revision = true }'
 before=$(install_count)
 expect_failure strict_revision run install --force android-sdkmanager:platform-tools
 [[ "$(install_count)" -gt "$before" ]] || die "singleton mismatch skipped installer attempt"
 [[ ! -f "$pt_record/.mise-sdk-package.json" ]] || die "failed forced install retained success receipt"
-assert_contains "$SDK_TEST_LOG" "$override|android|sdk install platform-tools"
-pass "real TOML boolean options, explicit tooling, strict mismatch, and force option retention"
+assert_contains "$SDK_TEST_LOG" "$selected|android|sdk install platform-tools"
+pass "removed option rejected, TOML booleans, strict mismatch, and force option retention"
 
 write_config '"android-sdkmanager:platform-tools" = { version = "36.0.2", strict_revision = true }'
 run install > "$root/matching.log" 2>&1
@@ -178,15 +180,13 @@ rm "$record/.mise-sdk-package.json"
 printf 'legacy\n' > "$record/.installed"
 mkdir "$sdk/.mise-install-lock"
 rm "$sdk/build-tools/36.0.0/aapt"
-rm "$sdk/.mise-cmdline-tools"
-ln -s "$root/missing-tooling" "$sdk/.mise-cmdline-tools"
 snapshot() {
     find "$sdk" "$record" -printf '%p|%y|%s|%T@|%l\n' | LC_ALL=C sort
 }
 snapshot > "$root/before"
 before=$(wc -l < "$SDK_TEST_LOG")
 MISE_ANDROID_SDK_LOCK_TIMEOUT=0 run exec -- sh -eu -c '
-    test "$ANDROID_HOME" = "$MISE_DATA_DIR/android-sdk-tools"
+    test "$ANDROID_HOME" = "$MISE_DATA_DIR/installs/android-sdk/20.0.0"
     test "$ANDROID_HOME" = "$ANDROID_SDK_ROOT"
     case ":$PATH:" in *":$ANDROID_HOME/build-tools/36.0.0:"*) ;; *) exit 1 ;; esac
 ' > "$root/activation.log" 2>&1
@@ -201,30 +201,79 @@ before=$(install_count)
 run install --force android-sdkmanager:build-tools > "$root/recovery.log" 2>&1
 [[ "$(install_count)" -gt "$before" ]] || die "recovery did not attempt missing payload"
 assert_receipt "$(record_for android-sdkmanager:build-tools)" 'build-tools;36.0.0' 36.0.0 "$selected"
-[[ -f "$sdk/cmdline-tools/20.0.0/lib/fixture.jar" ]] || die "recovery did not refresh broken tooling link"
-pass "legacy and cached activation are read-only despite missing payload, broken link, and stale lock"
+pass "legacy and cached activation are read-only despite missing payload and stale lock"
 
-inside="$sdk/nested/cmdline-tools/33.0.0"
-mkdir -p "$inside/bin"
-cp "$plugin/tests/fixtures/sdk-tool" "$inside/bin/sdkmanager"
-chmod +x "$inside/bin/sdkmanager"
-write_config "\"android-sdkmanager:build-tools\" = { version = \"36.0.0\", cmdline_tools = \"$inside\" }"
-expect_failure "inside the stable SDK root" run install --force android-sdkmanager:build-tools
-[[ ! -f "$(record_for android-sdkmanager:build-tools 2>/dev/null || printf '%s' "$record")/.mise-sdk-package.json" ]] \
-    || die "unsafe tooling source wrote receipt"
+find "$sdk/cmdline-tools" -type f -exec sha256sum {} + | sort > "$root/tools-after"
+cmp "$root/tools-before" "$root/tools-after"
+[[ ! -e "$MISE_DATA_DIR/android-sdk-tools" ]] || die "plugin created old shared root"
+pass "dependency tooling remains unchanged; no shared root or tooling copies created"
+
+# Keep old shared data and legacy records to exercise migration without changing ownership.
+old_shared="$MISE_DATA_DIR/android-sdk-tools"
+mkdir -p "$old_shared/build-tools/36.0.0" "$old_shared/licenses"
+printf 'old payload\n' > "$old_shared/build-tools/36.0.0/aapt"
+printf 'old license\n' > "$old_shared/licenses/keep"
+ln -s "$selected/.." "$old_shared/cmdline-tools"
+find "$old_shared" -printf '%p|%y|%s|%T@|%l\n' | sort > "$root/old-before"
+old_sdk=$sdk
+sdk_version=99.0.0
 write_config '"android-sdkmanager:build-tools" = "36.0.0"'
-pass "reject tooling source inside shared SDK"
+before=$(wc -l < "$SDK_TEST_LOG")
+ANDROID_HOME="$old_shared" ANDROID_SDK_ROOT="$old_shared" run exec -- sh -eu -c '
+    printf "ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\nPATH=%s\n" "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$PATH"
+' > "$root/switched-activation.log" 2>&1
+assert_contains "$root/switched-activation.log" "ANDROID_HOME=$MISE_DATA_DIR/installs/android-sdk/99.0.0"
+assert_contains "$root/switched-activation.log" "ANDROID_SDK_ROOT=$MISE_DATA_DIR/installs/android-sdk/99.0.0"
+[[ "$(wc -l < "$SDK_TEST_LOG")" == "$before" ]] || die "SDK switch activation executed Android tools"
+[[ ! -e "$MISE_DATA_DIR/installs/android-sdk/99.0.0/build-tools" ]] || die "activation repaired new SDK"
+run install > "$root/switched-install.log" 2>&1
+[[ ! -e "$MISE_DATA_DIR/installs/android-sdk/99.0.0/build-tools" ]] || die "plain install unexpectedly replaced existing record"
+sdk="$MISE_DATA_DIR/installs/android-sdk/99.0.0"
+selected="$sdk/cmdline-tools/99.0.0"
+rm "$record/.mise-sdk-package.json"
+printf 'legacy\n' > "$record/.installed"
+ANDROID_HOME="$old_shared" ANDROID_SDK_ROOT="$old_shared" run install --force android-sdkmanager:build-tools \
+    > "$root/switched-force.log" 2>&1 || { cat "$root/switched-force.log" >&2; exit 1; }
+assert_receipt "$(record_for android-sdkmanager:build-tools)" 'build-tools;36.0.0' 36.0.0 "$selected"
+run exec -- sh -eu -c '
+    test "$ANDROID_HOME" = "$MISE_DATA_DIR/installs/android-sdk/99.0.0"
+    test "$ANDROID_SDK_ROOT" = "$ANDROID_HOME"
+    test -f "$ANDROID_HOME/build-tools/36.0.0/aapt"
+    case ":$PATH:" in *":$ANDROID_HOME/build-tools/36.0.0:"*) ;; *) exit 1 ;; esac
+' > "$root/switched-warm.log" 2>&1
+[[ -f "$old_sdk/build-tools/36.0.0/aapt" ]] || die "previous SDK package removed"
+find "$old_shared" -printf '%p|%y|%s|%T@|%l\n' | sort > "$root/old-after"
+cmp "$root/old-before" "$root/old-after"
+pass "SDK switch with existing records stays read-only; force-install targets new root and preserves old roots"
 
-rm "$sdk/cmdline-tools"
-mkdir -p "$sdk/cmdline-tools/user/bin"
-printf 'owned by user\n' > "$sdk/cmdline-tools/keep"
-expect_failure "existing user-owned path is incomplete" run install --force android-sdkmanager:build-tools
-[[ "$(cat "$sdk/cmdline-tools/keep")" == "owned by user" ]] || die "incomplete user-owned tooling changed"
-cp "$plugin/tests/fixtures/sdk-tool" "$sdk/cmdline-tools/user/bin/sdkmanager"
-run install --force android-sdkmanager:build-tools > "$root/user-owned.log" 2>&1 || {
-    cat "$root/user-owned.log" >&2
-    exit 1
-}
-[[ ! -L "$sdk/cmdline-tools" && "$(cat "$sdk/cmdline-tools/keep")" == "owned by user" ]] || die "user-owned tooling replaced"
-pass "install preserves complete user-owned command-line tools"
+run plugin link jds-sdkmanager "$plugin" > "$root/renamed-link.log" 2>&1
+write_config '"jds-sdkmanager:build-tools" = ["9.0.0", "36.0.0"]
+"jds-sdkmanager:emulator" = { version = "36.2.1", strict_revision = true }
+"jds-sdkmanager:ndk" = "28.2.13676358"
+"jds-sdkmanager:platforms" = "android-36"'
+run install > "$root/renamed-install.log" 2>&1 || { cat "$root/renamed-install.log" >&2; exit 1; }
+for path in build-tools/9.0.0/aapt build-tools/36.0.0/aapt emulator/emulator ndk/28.2.13676358/ndk-build platforms/android-36/android.jar; do
+    [[ -f "$sdk/$path" ]] || die "missing package family: $path"
+done
+rm "$sdk/build-tools/9.0.0/aapt" "$sdk/build-tools/36.0.0/aapt"
+run cache clear > "$root/renamed-cache.log" 2>&1
+before=$(wc -l < "$SDK_TEST_LOG")
+run exec -- true > "$root/renamed-activation.log" 2>&1
+assert_contains "$root/renamed-activation.log" "mise install --force 'jds-sdkmanager:build-tools'"
+assert_contains "$root/renamed-activation.log" "$sdk"
+[[ "$(wc -l < "$SDK_TEST_LOG")" == "$before" ]] || die "renamed activation executed installers"
+run install --force jds-sdkmanager:build-tools > "$root/renamed-force.log" 2>&1
+[[ -f "$sdk/build-tools/9.0.0/aapt" && -f "$sdk/build-tools/36.0.0/aapt" ]] || die "force-install lost configured versions"
+pass "renamed plugin diagnostics and force-install preserve all configured versions; all package families covered"
+
+sdk_version=21.0.0
+java_version=21.0.0
+write_config '"jds-sdkmanager:build-tools" = { version = "37.0.0", depends = ["android-sdk", "java"] }'
+run install > "$root/cold-ordered.log" 2>&1 || { cat "$root/cold-ordered.log" >&2; exit 1; }
+sdk="$MISE_DATA_DIR/installs/android-sdk/21.0.0"
+selected="$sdk/cmdline-tools/21.0.0"
+assert_receipt "$(record_for jds-sdkmanager:build-tools)" 'build-tools;37.0.0' 37.0.0 "$selected"
+[[ -f "$sdk/build-tools/37.0.0/aapt" && -x "$MISE_DATA_DIR/installs/java/21.0.0/bin/java" ]] \
+    || die "cold dependency ordering failed"
+pass "single-command cold bootstrap respects explicit dependency ordering"
 printf 'PASS: actual mise runtime contract suite\n'
