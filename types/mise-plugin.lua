@@ -100,6 +100,7 @@ ARCH_TYPE = ""
 
 ---@class BackendListVersionsCtx
 ---@field tool string Tool name
+---@field options? table Tool options from mise.toml
 
 ---@class BackendListVersionsResult
 ---@field versions string[] List of available versions
@@ -108,6 +109,8 @@ ARCH_TYPE = ""
 ---@field tool string Tool name
 ---@field version string Version to install
 ---@field install_path string Path where the tool should be installed
+---@field download_path? string Download directory
+---@field options? table Tool options from mise.toml
 
 ---@class BackendInstallResult
 
@@ -115,12 +118,14 @@ ARCH_TYPE = ""
 ---@field tool string Tool name
 ---@field version string Installed version
 ---@field install_path string Installation path
+---@field options? table Tool options from mise.toml
 
 ---@class BackendExecEnvResult
 ---@field env_vars EnvKey[] Environment variables to set
 
 ---@class Plugin
 ---@field name string Plugin name
+---@field depends? string[] Plugin-wide dependencies
 ---@field Available? fun(self: Plugin, ctx: AvailableCtx): AvailableVersion[]
 ---@field PreInstall? fun(self: Plugin, ctx: PreInstallCtx): PreInstallResult
 ---@field PostInstall? fun(self: Plugin, ctx: PostInstallCtx)

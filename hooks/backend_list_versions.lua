@@ -1,24 +1,15 @@
 require("utils")
 
---- Lists available versions for an sdkmanager package family.
---- @param ctx {tool: string} Context — tool is the part after "android-sdkmanager:" in mise.toml
---- @return {versions: string[]} Available versions
+---@param ctx BackendListVersionsCtx
 function PLUGIN:BackendListVersions(ctx) -- luacheck: ignore
     local tool = ctx.tool
-
-    -- The SDK tool may not be available yet on a fresh machine before android-sdk is
-    -- installed. Fall back to an empty list so mise can still proceed with a pinned version.
-    local tools = available_sdk_tools()
-    if #tools == 0 then
-        return { versions = {} }
-    end
-
-    local cmd = require("cmd")
+    local options = require("packages").options(tool, ctx.options)
+    local sdk_tools = require("sdk_tools")
+    local selected = sdk_tools.resolve(options)
     local errors = {}
 
-    for _, info in ipairs(tools) do
-        local command = shell_quote(info.path) .. ((info.kind == "android") and " sdk list" or " --list")
-        local ok, output = pcall(cmd.exec, command)
+    for _, info in ipairs(selected.tools) do
+        local ok, output = pcall(sdk_tools.list, info, sdk_install_root())
         if ok then
             local versions = parse_versions(tool, output)
             if #versions > 0 then
@@ -40,16 +31,26 @@ end
 --- @param output string Raw listing output
 --- @return string[] Versions
 function parse_versions(tool, output) -- luacheck: ignore
+    local package = require("packages").describe(tool)
     local versions = {}
     local seen = {}
+    local lower = output:lower()
+    local sectioned = lower:match("available packages%s*:") ~= nil
+        or lower:match("installed packages%s*:") ~= nil
+        or lower:match("available updates%s*:") ~= nil
+    local available = not sectioned
 
     for line in output:gmatch("[^\n]+") do
+        local heading = line:lower():match("^%s*(.-)%s*:%s*$")
+        if sectioned and heading then
+            available = heading == "available packages"
+        end
         local path, columns = line:match("^%s*([^%s|]+)%s*(.*)$")
         local version
-        if path then
+        if path and available then
             path = path:gsub("/", ";")
-            if NO_VERSION_TOOLS[tool] then
-                if path == tool then
+            if package.singleton then
+                if path == package.family then
                     if columns:sub(1, 1) == "|" then
                         version = columns:match("^|%s*([^|]-)%s*|")
                     else
@@ -59,14 +60,14 @@ function parse_versions(tool, output) -- luacheck: ignore
                         version = nil
                     end
                 end
-            elseif tool == "system-images" then
+            elseif package.family == "system-images" then
                 local api = path:match("^system%-images;(android%-[^;]+);")
                 if api and path == build_package_name(tool, api) then
                     version = api
                 end
             else
                 local family, value = path:match("^([^;]+);([^;]+)$")
-                if family == tool then
+                if family == package.family then
                     version = value
                 end
             end

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${SDK_TEST_PLUGIN:?missing test plugin directory}"
+if [[ "$ASDF_INSTALL_PATH" == */java/* ]]; then
+    mkdir -p "$ASDF_INSTALL_PATH/bin"
+    printf '#!/bin/sh\necho "fake Java %s"\n' "$ASDF_INSTALL_VERSION" > "$ASDF_INSTALL_PATH/bin/java"
+    chmod +x "$ASDF_INSTALL_PATH/bin/java"
+else
+    directory="$ASDF_INSTALL_PATH/cmdline-tools/$ASDF_INSTALL_VERSION"
+    mkdir -p "$directory/bin" "$directory/lib"
+    cp "$SDK_TEST_PLUGIN/tests/fixtures/sdk-tool" "$directory/bin/sdkmanager"
+    cp "$SDK_TEST_PLUGIN/tests/fixtures/sdk-tool" "$directory/bin/android"
+    chmod +x "$directory/bin/sdkmanager" "$directory/bin/android"
+    printf 'complete tooling tree\n' > "$directory/lib/fixture.jar"
+    printf 'Pkg.Revision=%s\n' "$ASDF_INSTALL_VERSION" > "$directory/source.properties"
+fi

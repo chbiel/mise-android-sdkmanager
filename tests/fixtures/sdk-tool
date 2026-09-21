@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${SDK_TEST_LOG:?SDK_TEST_LOG must point inside the isolated test directory}"
+tool=${0##*/}
+source_dir=$(cd "$(dirname "$0")/.." && pwd -P)
+printf '%s|%s|%s\n' "$source_dir" "$tool" "$*" >> "$SDK_TEST_LOG"
+
+if [[ "$tool" == android && "${1:-} ${2:-}" == "sdk --help" ]]; then
+    if [[ "${SDK_TEST_LEGACY_ANDROID:-0}" == 1 ]]; then
+        echo "Legacy Android project manager"
+        exit "${SDK_TEST_HELP_STATUS:-0}"
+    fi
+    echo "Usage: android sdk {install,list}" >&2
+    exit "${SDK_TEST_HELP_STATUS:-0}"
+fi
+
+root=${ANDROID_SDK_ROOT:-}
+action=
+package=
+if [[ "$tool" == android ]]; then
+    [[ "${1:-}" == sdk ]] || exit 64
+    action=${2:-}
+    package=${3:-}
+    package=${package//\//;}
+else
+    for argument in "$@"; do
+        case "$argument" in
+            --sdk_root=*) root=${argument#*=} ;;
+            --list|--list_installed) action=list ;;
+            --licenses) action=licenses ;;
+            --install) action=install ;;
+            *) package=$argument ;;
+        esac
+    done
+fi
+[[ -n "$root" ]] || { echo "Missing explicit SDK root" >&2; exit 65; }
+[[ "$root" == "$MISE_DATA_DIR/android-sdk-tools" ]] || {
+    echo "Wrong SDK root: $root" >&2
+    exit 66
+}
+
+if [[ "$action" == list ]]; then
+    if [[ "$tool" == android && " $* " != *" sdk list --all --all-versions "* ]]; then
+        echo "Modern listings require --all --all-versions" >&2
+        exit 70
+    fi
+    cat <<'EOF'
+Installed packages:
+  Path | Version | Description | Location
+  platform-tools | 1.0.0 | Obsolete installed tools | platform-tools
+  emulator | 2.0.0 | Obsolete installed emulator | emulator
+Available packages:
+  Path | Version | Description
+  platform-tools | 36.0.2 | Android SDK Platform-Tools
+  emulator | 36.2.1 | Android Emulator
+  build-tools;9.0.0 | 9.0.0 | Android SDK Build-Tools
+  build-tools;36.0.0 | 36.0.0 | Android SDK Build-Tools
+  platforms;android-36 | 2 | Android SDK Platform 36
+  ndk;28.2.13676358 | 28.2.13676358 | NDK
+  cmake;3.22.1 | 3.22.1 | CMake
+  system-images;android-35;google_apis;arm64-v8a | 9 | ARM image
+  system-images;android-36;google_apis;arm64-v8a | 9 | ARM image
+  system-images;android-34;google_apis_playstore;x86_64 | 9 | Play Store image
+  system-images;android-36;google_apis_playstore;arm64-v8a | 9 | Play Store ARM image
+Available Updates:
+  ID | Installed | Available
+  platform-tools | 1.0.0 | 36.0.2
+EOF
+    exit 0
+fi
+[[ -d "$root/.mise-install-lock" ]] || {
+    echo "SDK mutation without root lock" >&2
+    exit 67
+}
+[[ "$action" == licenses ]] && exit 0
+[[ "$action" == install && -n "$package" ]] || exit 68
+
+if [[ "${SDK_TEST_FAIL:-0}" == 1 || ( "$tool" == android && "${SDK_TEST_ANDROID_FAIL:-0}" == 1 ) ]]; then
+    echo "fixture installer stdout"
+    echo "fixture installer stderr" >&2
+    exit 23
+fi
+[[ "${SDK_TEST_INCOMPLETE:-0}" == 1 ]] && exit 0
+
+directory="$root/${package//;/\/}"
+family=${package%%;*}
+version=${package#*;}
+case "$family" in
+    platform-tools) revision=${SDK_TEST_REVISION:-36.0.2}; payload=adb ;;
+    emulator) revision=${SDK_TEST_REVISION:-36.2.1}; payload=emulator ;;
+    build-tools) revision=$version; payload=aapt ;;
+    platforms) revision=2; payload=android.jar ;;
+    system-images) revision=9; payload=system.img ;;
+    ndk) revision=$version; payload=ndk-build ;;
+    cmake) revision=$version; payload=bin/cmake ;;
+    *) echo "Unknown package: $package" >&2; exit 69 ;;
+esac
+mkdir -p "$directory/$(dirname "$payload")"
+printf '#!/bin/sh\nprintf "fake %s\\n"\n' "$family" > "$directory/$payload"
+chmod +x "$directory/$payload"
+printf 'Pkg.Path=%s\nPkg.Revision=%s\n' "$package" "$revision" > "$directory/source.properties"

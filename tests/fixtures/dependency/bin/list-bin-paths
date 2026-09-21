@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+if [[ -d "$ASDF_INSTALL_PATH/cmdline-tools" ]]; then
+    printf 'cmdline-tools/%s/bin\n' "$ASDF_INSTALL_VERSION"
+else
+    printf 'bin\n'
+fi

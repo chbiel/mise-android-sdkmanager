@@ -1,46 +1,37 @@
 require("utils")
 
---- Advertises PATH entries for sdkmanager tools that install runnable binaries and
---- pins the SDK root to a stable, plugin-owned directory.
----
---- Packages are installed into a stable root (sdk_install_root()) rather than into the
---- android-sdk tool's own versioned directory. We therefore export ANDROID_SDK_ROOT /
---- ANDROID_HOME pointing at that stable root, overriding the value the android-sdk
---- dependency exports. This keeps every package under one unified root that survives
---- android-sdk upgrades and that Gradle/AGP can consume.
----
---- It also self-heals drift: if a tracked package is missing from the stable root (e.g.
---- it was deleted), it is transparently reinstalled before its PATH entry is exported.
---- @param ctx {tool: string, version: string, install_path: string} Context
---- @return {env_vars: table[]} Environment entries for this tool
+---@param ctx BackendExecEnvCtx
 function PLUGIN:BackendExecEnv(ctx) -- luacheck: ignore
+    local packages = require("packages")
+    packages.options(ctx.tool, ctx.options)
+    local package = packages.describe(ctx.tool, ctx.version)
     local sdk_root = sdk_install_root()
+    local log = require("log")
+    local plugin_name = (RUNTIME.pluginDirPath or ""):match("([^/]+)/?$") or "android-sdkmanager"
+    local repair = " Run mise install --force "
+        .. shell_quote(plugin_name .. ":" .. ctx.tool)
+        .. " to retry explicitly."
 
-    local ok, failure = pcall(
-        with_sdk_lock,
-        sdk_root,
-        "activate " .. build_package_name(ctx.tool, ctx.version),
-        function(locked_root)
-            local linked, link_failure = pcall(ensure_cmdline_tools, locked_root)
-            if not linked then
-                require("log").warn("Could not expose cmdline-tools: " .. tostring(link_failure))
-            end
-            ensure_package_installed(locked_root, ctx.tool, ctx.version)
-        end
-    )
-    if not ok then
-        require("log").warn("Could not prepare Android SDK: " .. tostring(failure))
+    -- These checks are advisory: mise can cache this hook's environment result.
+    local ok, revision, failure = pcall(packages.installed_revision, sdk_root, package)
+    if not ok or not revision then
+        log.warn((ok and failure or tostring(revision)) .. repair)
+    elseif package.singleton and not packages.same_revision(revision, ctx.version) then
+        log.warn(revision_warning(ctx.tool, ctx.version, revision))
+    end
+    local exposed, complete = pcall(require("sdk_tools").exposed, sdk_root)
+    if not exposed or not complete then
+        local reason = exposed and ("Missing or incomplete cmdline-tools in " .. sdk_root) or tostring(complete)
+        log.warn(reason .. repair)
     end
 
     local env_vars = {
         { key = "ANDROID_SDK_ROOT", value = sdk_root },
         { key = "ANDROID_HOME", value = sdk_root },
     }
-
-    local bin_path = resolve_bin_path(sdk_root, ctx.tool, ctx.version)
+    local bin_path = packages.bin_path(sdk_root, package)
     if bin_path then
         table.insert(env_vars, { key = "PATH", value = bin_path })
     end
-
     return { env_vars = env_vars }
 end

@@ -13,15 +13,32 @@ fail() { echo "✗ $1"; FAIL=$((FAIL + 1)); }
 # ── Isolated mise environment ─────────────────────────────────────────────────
 # All mise operations run inside a temp dir so the global tool store,
 # cache, and config are never touched.
-MISE_TEST_DIR=$(mktemp -d)
-trap 'rm -rf "$MISE_TEST_DIR"' EXIT
-lua "$PLUGIN_DIR/tests/regression.lua" "$PLUGIN_DIR" "$MISE_TEST_DIR"
+# Resolve the existing Lua dependency before isolating mise's tool store.
+if command -v lua >/dev/null 2>&1; then
+    SDK_TEST_LUA=$(command -v lua)
+else
+    SDK_TEST_LUA=$(mise exec lua -- sh -c 'command -v lua')
+fi
+export SDK_TEST_LUA
+MISE_TEST_DIR=$(mktemp -d "$PLUGIN_DIR/.test.XXXXXXXX")
+trap 'rm -rf -- "$MISE_TEST_DIR"' EXIT
+export MISE_DATA_DIR="$MISE_TEST_DIR/unit-data"
+export MISE_CACHE_DIR="$MISE_TEST_DIR/cache"
+export MISE_CONFIG_DIR="$MISE_TEST_DIR/config"
+export MISE_STATE_DIR="$MISE_TEST_DIR/state"
+export MISE_GLOBAL_CONFIG_FILE="$MISE_TEST_DIR/global.toml"
+export MISE_SYSTEM_CONFIG_FILE="$MISE_TEST_DIR/system.toml"
+export MISE_TRUSTED_CONFIG_PATHS="$MISE_TEST_DIR"
+export MISE_OVERRIDE_CONFIG_FILENAMES=test.mise.toml
+export MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=test.tool-versions
+touch "$MISE_GLOBAL_CONFIG_FILE" "$MISE_SYSTEM_CONFIG_FILE"
+"$SDK_TEST_LUA" "$PLUGIN_DIR/tests/regression.lua" "$PLUGIN_DIR" "$MISE_TEST_DIR"
 bash "$PLUGIN_DIR/tests/locking.sh" "$PLUGIN_DIR" "$MISE_TEST_DIR"
 if [[ "${1:-}" == "--unit" ]]; then
     exit 0
 fi
+bash "$PLUGIN_DIR/tests/runtime.sh" "$PLUGIN_DIR" "$MISE_TEST_DIR"
 if [[ "${1:-}" == "--runtime" ]]; then
-    bash "$PLUGIN_DIR/tests/runtime.sh" "$PLUGIN_DIR" "$MISE_TEST_DIR"
     exit 0
 fi
 export MISE_DATA_DIR="$MISE_TEST_DIR/data"
@@ -29,6 +46,7 @@ export MISE_CACHE_DIR="$MISE_TEST_DIR/cache"
 export MISE_CONFIG_DIR="$MISE_TEST_DIR/config"
 export MISE_STATE_DIR="$MISE_TEST_DIR/state"
 export MISE_IGNORED_CONFIG_PATHS="${HOME}/.config/mise/config.toml:${HOME}/.config/mise.toml"
+export MISE_CONFIG_FILE="$MISE_TEST_DIR/test.mise.toml"
 
 cd "$MISE_TEST_DIR"
 
@@ -42,18 +60,22 @@ mise cache clear 2>/dev/null
 echo ""
 echo "=== Installing test dependencies ==="
 
-cat > mise.toml << 'EOF'
+cat > "$MISE_CONFIG_FILE" << 'EOF'
+[tool_alias.android-sdk]
+backend = "vfox:mise-plugins/vfox-android-sdk"
 [tools]
-"vfox:mise-plugins/vfox-android-sdk" = "latest"
+android-sdk = "latest"
 java = "temurin-17"
 [settings]
 experimental = true
 EOF
 if [[ "${1:-}" == "--sdk-stress" ]]; then
     # Match the consuming project's command-line tooling, without its hooks or credentials.
-    cat > mise.toml << 'EOF'
+    cat > "$MISE_CONFIG_FILE" << 'EOF'
+[tool_alias.android-sdk]
+backend = "vfox:mise-plugins/vfox-android-sdk"
 [tools]
-"vfox:mise-plugins/vfox-android-sdk" = "20.0"
+android-sdk = "20.0"
 java = "temurin-21"
 [settings]
 experimental = true
