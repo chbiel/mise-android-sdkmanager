@@ -10,6 +10,10 @@ function shell_quote(value) -- luacheck: ignore
     return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
+function with_sdk_lock(sdk_root, operation, callback) -- luacheck: ignore
+    return require("sdk_lock").with_lock(sdk_root, operation, callback)
+end
+
 function system_image_abi() -- luacheck: ignore
     return (RUNTIME.archType == "arm64" or RUNTIME.archType == "aarch64") and "arm64-v8a" or "x86_64"
 end
@@ -379,21 +383,48 @@ function run_install(info, package_name, target_root) -- luacheck: ignore
     local binary = shell_quote(info.path)
     local pkg = shell_quote(format_package(info.kind, package_name))
 
-    if info.kind == "android" then
-        return pcall(
+    local function execute(command, phase, options)
+        -- mise returns stdout on success but only stderr on failure. Preserve both
+        -- streams on the appropriate channel while keeping the real exit status.
+        local ok, output = pcall(
             cmd.exec,
-            binary .. " sdk install " .. pkg .. " 2>&1",
+            "if output=$(\n"
+                .. command
+                .. " 2>&1\n); then\n"
+                .. "printf '%s\\n' \"$output\"\n"
+                .. 'else\nstatus=$?\nprintf \'%s\\n\' "$output" >&2\nexit "$status"\nfi',
+            options or {}
+        )
+        if not ok then
+            return false,
+                phase
+                    .. " failed for '"
+                    .. package_name
+                    .. "' using "
+                    .. info.path
+                    .. " in "
+                    .. target_root
+                    .. ":\n"
+                    .. tostring(output)
+        end
+        return true, output
+    end
+
+    if info.kind == "android" then
+        return execute(
+            binary .. " sdk install " .. pkg,
+            "install",
             { env = { ANDROID_SDK_ROOT = target_root, ANDROID_HOME = target_root } }
         )
     end
 
     local command = binary .. " --sdk_root=" .. shell_quote(target_root)
     -- Ignore only yes's expected broken pipe, not sdkmanager's license exit status.
-    local ok, output = pcall(cmd.exec, "(yes 2>/dev/null || :) | " .. command .. " --licenses 2>&1")
+    local ok, output = execute("(yes 2>/dev/null || :) | " .. command .. " --licenses", "license acceptance")
     if not ok then
         return false, tostring(output)
     end
-    return pcall(cmd.exec, command .. " --install " .. pkg .. " 2>&1")
+    return execute(command .. " --install " .. pkg, "install")
 end
 
 --- Reads the installed revision only when metadata and the package payload are present.
@@ -415,7 +446,7 @@ function installed_package_revision(sdk_root, tool, version) -- luacheck: ignore
         cmake = "bin/cmake",
     }
     if not file.exists(file.join_path(package_dir, payloads[tool])) then
-        return nil, "Missing package payload in " .. package_dir
+        return nil, "Missing package payload " .. file.join_path(package_dir, payloads[tool])
     end
 
     local revision, package_path
@@ -460,7 +491,7 @@ function installed_package_revision(sdk_root, tool, version) -- luacheck: ignore
     return revision
 end
 
---- Installs using android first, then sdkmanager, checking command status and package metadata.
+--- Installs using android first, then sdkmanager. Caller must hold the SDK-root lock.
 --- @param tool string Tool family (e.g. "build-tools", "emulator")
 --- @param version string Requested version
 --- @param target_root string Absolute path to install into (the stable SDK root)
@@ -499,7 +530,17 @@ function install_package(tool, version, target_root) -- luacheck: ignore
                 end
                 return
             end
-            table.insert(errors, info.kind .. ": " .. failure .. "\n" .. output)
+            table.insert(
+                errors,
+                info.kind
+                    .. " ("
+                    .. info.path
+                    .. "): validation failed after installer success: "
+                    .. failure
+                    .. "\nThe SDK installer may consider an incomplete package installed; "
+                    .. "inspect its package.xml/source.properties and --list_installed output before recovery.\n"
+                    .. output
+            )
         else
             table.insert(errors, info.kind .. ": " .. tostring(output))
         end
@@ -548,7 +589,7 @@ function resolve_bin_path(sdk_root, tool, version) -- luacheck: ignore
     return paths[tool]
 end
 
---- Repairs missing/incomplete packages without making activation fatal.
+--- Repairs missing/incomplete packages without making activation fatal. Caller holds the SDK-root lock.
 --- @param sdk_root string Absolute path to the Android SDK root
 --- @param tool string Tool family
 --- @param version string Installed version

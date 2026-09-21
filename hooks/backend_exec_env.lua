@@ -16,11 +16,21 @@ require("utils")
 function PLUGIN:BackendExecEnv(ctx) -- luacheck: ignore
     local sdk_root = sdk_install_root()
 
-    local ok, failure = pcall(ensure_cmdline_tools, sdk_root)
+    local ok, failure = pcall(
+        with_sdk_lock,
+        sdk_root,
+        "activate " .. build_package_name(ctx.tool, ctx.version),
+        function(locked_root)
+            local linked, link_failure = pcall(ensure_cmdline_tools, locked_root)
+            if not linked then
+                require("log").warn("Could not expose cmdline-tools: " .. tostring(link_failure))
+            end
+            ensure_package_installed(locked_root, ctx.tool, ctx.version)
+        end
+    )
     if not ok then
-        require("log").warn("Could not expose cmdline-tools: " .. tostring(failure))
+        require("log").warn("Could not prepare Android SDK: " .. tostring(failure))
     end
-    ensure_package_installed(sdk_root, ctx.tool, ctx.version)
 
     local env_vars = {
         { key = "ANDROID_SDK_ROOT", value = sdk_root },

@@ -131,7 +131,33 @@ Existing user-owned command-line tools directories and links are preserved. If t
 
 Because that root stays fixed across upgrades, all packages coexist in one unified location, which is what Gradle and AGP expect. If a tracked package disappears from the stable root, the plugin tries to reinstall it when the hook runs. Incomplete packages are also repaired, and any repair failure is reported as a warning instead of blocking activation.
 
+### Concurrent installation and repair
+
+The plugin serializes mutations of each SDK root using an atomic directory lock at `<sdk-root>/.mise-install-lock`. The lock covers command-line tooling links, license acceptance, installer attempts, package validation, and installation markers. It works across package families and separate mise processes on Linux and macOS, including paths that resolve to the same root through symlinks. Different SDK roots and unrelated mise tools can still install concurrently.
+
+Activation also takes this lock before refreshing links or repairing packages. After waiting, it checks the package again so it does not repair an installation another process has just completed. Normal activation of complete packages does not invoke the installer.
+
+The default maximum lock wait is 600 seconds. Set `MISE_ANDROID_SDK_LOCK_TIMEOUT` to an integer from `0` to `86400` seconds to change it; `0` fails immediately on contention. An explicit install fails on a lock error, while activation reports a warning. The limit applies to waiting for the lock, not to the duration of the installation that owns it.
+
+This is a cooperative plugin lock, not a global Android SDK lock. Android Studio, Gradle, and manually launched SDK installers do not honor it; avoid running those writers against the same SDK while mise is installing or repairing packages.
+
+### Lock recovery
+
+Normal completion and errors release the lock. Abrupt termination, such as `SIGKILL` or a runner shutdown, can leave it behind. The plugin never steals a lock based on its age or a missing parent process: an installer child may still be writing.
+
+If a lock wait times out, the error identifies the lock and includes its owner record when available. Inspect that record, stop or wait for **all** installers using the root, and only then remove the abandoned lock. Remove its `owner.<token>/info` file, then the empty `owner.<token>` directory and `.mise-install-lock` directory with `rmdir`. An interruption before the owner record was written may leave an empty lock directory. Do not delete the SDK root or remove locks while a writer could still be active. Unexpected contents require inspection rather than recursive removal.
+
+Cache the shared SDK payload together with mise's installation state, but exclude `.mise-install-lock` and its contents from caches. Restoring only mise's markers can trigger package repair; restoring a lock can block it.
+
 ## Common gotchas
+
+### Installer fails, or reports success with missing package files
+
+Installer errors include the package, executable, SDK root, phase (license acceptance or installation), and captured stdout/stderr. Failed commands are never accepted merely because a package directory exists.
+
+If an installer exits successfully but validation still fails, the error names the missing payload or invalid metadata. A subsequent installer invocation can be a no-op if SDK metadata considers an incomplete package installed. Inspect that package's `source.properties`, `package.xml`, actual files, and `sdkmanager --sdk_root="$ANDROID_HOME" --list_installed` output. The plugin does not automatically uninstall packages, delete their metadata, or wipe the shared SDK to force recovery.
+
+To investigate intermittent cold-cache failures, compare an isolated fresh installation with `mise install --jobs 1`. Serial success is evidence to investigate concurrency, not proof that every installer failure has the same cause. Existing incomplete packages may still need package-specific recovery even after concurrent writes are prevented.
 
 ### Flutter reports missing command-line tools
 
@@ -195,7 +221,21 @@ Run:
 mise run test --unit
 ```
 
-for offline regression coverage.
+for offline regression coverage, including real shell processes contending for the SDK lock.
+
+To exercise the actual mise Lua runtime with local fake SDK installers, without downloading Android packages:
+
+```bash
+mise run test --runtime
+```
+
+To exercise a fresh SDK with concurrent requests for build-tools `36.0.0`, platforms `android-36`, NDK `28.2.13676358`, and CMake `3.22.1`, followed by warm activation:
+
+```bash
+mise run test --sdk-stress
+```
+
+This isolated integration case downloads command-line tools `20.0`, Java 21, and the four SDK packages.
 
 The broader test command also runs isolated integration tests, which download Java and Android SDK packages:
 

@@ -16,11 +16,18 @@ fail() { echo "✗ $1"; FAIL=$((FAIL + 1)); }
 MISE_TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$MISE_TEST_DIR"' EXIT
 lua "$PLUGIN_DIR/tests/regression.lua" "$PLUGIN_DIR" "$MISE_TEST_DIR"
+bash "$PLUGIN_DIR/tests/locking.sh" "$PLUGIN_DIR" "$MISE_TEST_DIR"
 if [[ "${1:-}" == "--unit" ]]; then
+    exit 0
+fi
+if [[ "${1:-}" == "--runtime" ]]; then
+    bash "$PLUGIN_DIR/tests/runtime.sh" "$PLUGIN_DIR" "$MISE_TEST_DIR"
     exit 0
 fi
 export MISE_DATA_DIR="$MISE_TEST_DIR/data"
 export MISE_CACHE_DIR="$MISE_TEST_DIR/cache"
+export MISE_CONFIG_DIR="$MISE_TEST_DIR/config"
+export MISE_STATE_DIR="$MISE_TEST_DIR/state"
 export MISE_IGNORED_CONFIG_PATHS="${HOME}/.config/mise/config.toml:${HOME}/.config/mise.toml"
 
 cd "$MISE_TEST_DIR"
@@ -42,6 +49,16 @@ java = "temurin-17"
 [settings]
 experimental = true
 EOF
+if [[ "${1:-}" == "--sdk-stress" ]]; then
+    # Match the consuming project's command-line tooling, without its hooks or credentials.
+    cat > mise.toml << 'EOF'
+[tools]
+"vfox:mise-plugins/vfox-android-sdk" = "20.0"
+java = "temurin-21"
+[settings]
+experimental = true
+EOF
+fi
 
 echo "Installing vfox:mise-plugins/vfox-android-sdk and java via mise..."
 mise install --yes
@@ -49,6 +66,26 @@ pass "android-sdk + java installed"
 
 eval "$(mise env --shell bash)"
 pass "android-sdk env loaded (ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>})"
+
+if [[ "${1:-}" == "--sdk-stress" ]]; then
+    sdk_tools=(
+        "${PLUGIN}:build-tools@36.0.0"
+        "${PLUGIN}:platforms@android-36"
+        "${PLUGIN}:ndk@28.2.13676358"
+        "${PLUGIN}:cmake@3.22.1"
+    )
+    mise install --jobs 4 "${sdk_tools[@]}"
+    mise exec "${sdk_tools[@]}" -- sh -eu -c '
+        test "$ANDROID_HOME" = "$ANDROID_SDK_ROOT"
+        test -f "$ANDROID_HOME/build-tools/36.0.0/aapt"
+        test -f "$ANDROID_HOME/platforms/android-36/android.jar"
+        test -f "$ANDROID_HOME/ndk/28.2.13676358/ndk-build"
+        test -f "$ANDROID_HOME/cmake/3.22.1/bin/cmake"
+        test ! -e "$ANDROID_HOME/.mise-install-lock"
+    '
+    pass "cold parallel SDK installs and warm activation"
+    exit 0
+fi
 
 # ── 3. ls-remote: single-version tools ───────────────────────────────────────
 # emulator and platform-tools expose exactly one version in sdkmanager. ls-remote
