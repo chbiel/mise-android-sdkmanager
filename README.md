@@ -65,6 +65,27 @@ To fail installation on a revision mismatch, add `strict_revision`:
 
 This boolean option applies only to platform-tools and emulator. It checks the observed revision; it cannot retrieve unavailable older releases or prevent another project from changing the shared package later. It also applies to `latest`, because mise passes its resolved number. Older mise releases that serialize booleans as `"true"`/`"false"` are supported.
 
+#### Recovering from revision mismatch warnings
+
+If platform-tools or emulator reports `installed revision ... differs from mise's resolved version ...`, mise's cached versions or lockfile may be older than the installed shared package. This can happen even with `version = "latest"`, because mise resolves `latest` to a numeric revision.
+
+With both tools configured as `latest`, run these commands from the affected project:
+
+```bash
+mise cache clear android-sdkmanager:platform-tools android-sdkmanager:emulator
+mise upgrade --no-prune android-sdkmanager:platform-tools android-sdkmanager:emulator
+# Run this final command only if the project uses a mise lockfile.
+mise lock --bump android-sdkmanager:platform-tools android-sdkmanager:emulator
+```
+
+Replace `android-sdkmanager` with your registered plugin name, such as `jds-sdkmanager`, in all three commands.
+
+The commands refresh version discovery, upgrade the selected tools, and re-resolve their lockfile entries. Plain `mise lock` can preserve existing locked versions; `--bump` advances `latest`. Review the lockfile changes and commit them if the lockfile is tracked.
+
+`--no-prune` retains the old mise installation records; it does not preserve an older copy of the shared SDK package. Upgrading can affect other projects using the same SDK root. Avoid concurrent SDK updates from Android Studio, Gradle, or manual installers.
+
+If warnings remain, inspect fresh `mise ls-remote` results for the affected tools and compare them with package metadata in the selected SDK root. Cache and lockfile refreshes cannot fix every upstream listing or installation mismatch. Revisions remain advisory, and warnings can recur when another project or SDK tool updates a shared package.
+
 ### System images
 
 The `system-images` shorthand selects `google_apis_playstore` with `arm64-v8a` on ARM64 hosts and `x86_64` otherwise. For explicit variants:
