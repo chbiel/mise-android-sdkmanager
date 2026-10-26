@@ -5,7 +5,11 @@ function PLUGIN:BackendExecEnv(ctx) -- luacheck: ignore
     local packages = require("packages")
     packages.options(ctx.tool, ctx.options)
     local package = packages.describe(ctx.tool, ctx.version)
-    local sdk_root = require("sdk_tools").locate().root
+    local selected = require("sdk_tools").locate_if_available()
+    if not selected then
+        return { env_vars = {} }
+    end
+    local sdk_root = selected.root
     local log = require("log")
     local plugin_name = (RUNTIME.pluginDirPath or ""):match("([^/]+)/?$") or "android-sdkmanager"
     local repair = " Run mise install --force "

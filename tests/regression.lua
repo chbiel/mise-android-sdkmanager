@@ -238,6 +238,46 @@ test("healthy activation does not execute installers or acquire locks", function
     )
 end)
 
+test("activation is a no-op without selected Android command-line tools", function()
+    local previous_path = environment.PATH
+    environment.PATH = "/usr/bin:/bin"
+    support.warnings = {}
+    support.commands = {}
+    support.readonly = true
+    for _, case in ipairs({
+        { "build-tools", "36.0.0" },
+        { "platform-tools", "36.0.2" },
+        { "emulator", "36.2.1" },
+        { "platforms", "android-36" },
+        { "ndk", "28.2.13676358" },
+        { "cmake", "3.22.1" },
+        { "system-images", "android-36" },
+        { "system-images/google_apis/arm64-v8a", "android-36" },
+    }) do
+        local result = PLUGIN:BackendExecEnv({
+            tool = case[1],
+            version = case[2],
+            install_path = directory .. "/record",
+            options = {},
+        })
+        equal(#result.env_vars, 0, case[1])
+    end
+    support.readonly = false
+    equal(#support.commands, 0)
+    equal(#support.warnings, 0)
+    for _, hook in ipairs({ PLUGIN.BackendListVersions, PLUGIN.BackendInstall }) do
+        raises(function()
+            hook(PLUGIN, {
+                tool = "build-tools",
+                version = "36.0.0",
+                install_path = directory .. "/record",
+                options = {},
+            })
+        end, "install the configured android-sdk and java dependencies")
+    end
+    environment.PATH = previous_path
+end)
+
 test("selected PATH wins over inherited roots and canonical aliases agree", function()
     local tools = require("sdk_tools")
     equal(tools.locate().root, selected_root)
@@ -261,6 +301,14 @@ test("nonstandard physical tools layout fails rather than splitting roots", func
     local previous = environment.PATH
     environment.PATH = alias .. "/20/bin"
     raises(require("sdk_tools").locate, "unsupported physical layout")
+    raises(function()
+        PLUGIN:BackendExecEnv({
+            tool = "build-tools",
+            version = "36.0.0",
+            install_path = directory .. "/record",
+            options = {},
+        })
+    end, "unsupported physical layout")
     environment.PATH = previous
 end)
 

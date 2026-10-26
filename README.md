@@ -141,7 +141,9 @@ Repeat the explicit force-install step after future `android-sdk` version switch
 
 ## Activation and recovery
 
-**Activation is read-only.** It does not execute Android tools, download packages, accept licenses, write receipts, or wait for the installation lock. It warns about detected missing package files without blocking activation, naming the affected SDK root and an explicit force-install command. Mise caches environment results, so these warnings are not continuous integrity checks.
+**Activation is read-only.** It does not execute Android tools, download packages, accept licenses, write receipts, or wait for the installation lock. When no Android command-line tools are selected in the current environment, activation silently contributes no environment variables; unrelated mise operations can proceed without Android SDK dependencies. SDK version discovery and package installation still require those dependencies.
+
+With a selected SDK, activation warns about detected missing package files without blocking activation, naming the affected SDK root and an explicit force-install command. Mise caches environment results, so these warnings are not continuous integrity checks.
 
 Retry an affected configured tool explicitly:
 

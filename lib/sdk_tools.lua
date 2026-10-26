@@ -1,7 +1,7 @@
 local M = {}
 
---- Select one dependency installation, never the highest version in the mise store.
-function M.locate()
+--- Return nil when this environment has no selected Android command-line tools.
+function M.locate_if_available()
     local file = require("file")
     local cmd = require("cmd")
     if RUNTIME.osType == "windows" then
@@ -17,10 +17,7 @@ function M.locate()
         end
     end
     if not directory or not directory:match("^/.*/cmdline%-tools/[^/]+$") then
-        error(
-            "Cannot locate selected Android command-line tools: install the configured android-sdk and java dependencies; "
-                .. "and ensure the selected android-sdk exports cmdline-tools/<version>/bin on PATH"
-        )
+        return nil
     end
     local canonical = cmd.exec("cd " .. shell_quote(directory) .. " && pwd -P"):gsub("\n$", "")
     local root = canonical:match("^(.+)/cmdline%-tools/[^/]+$")
@@ -32,6 +29,18 @@ function M.locate()
         )
     end
     return { directory = canonical, root = root }
+end
+
+--- Select one dependency installation, never the highest version in the mise store.
+function M.locate()
+    local selected = M.locate_if_available()
+    if not selected then
+        error(
+            "Cannot locate selected Android command-line tools: install the configured android-sdk and java dependencies; "
+                .. "and ensure the selected android-sdk exports cmdline-tools/<version>/bin on PATH"
+        )
+    end
+    return selected
 end
 
 --- Capability probes are only allowed during explicit discovery and installation.

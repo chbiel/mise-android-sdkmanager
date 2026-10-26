@@ -276,4 +276,31 @@ assert_receipt "$(record_for jds-sdkmanager:build-tools)" 'build-tools;37.0.0' 3
 [[ -f "$sdk/build-tools/37.0.0/aapt" && -x "$MISE_DATA_DIR/installs/java/21.0.0/bin/java" ]] \
     || die "cold dependency ordering failed"
 pass "single-command cold bootstrap respects explicit dependency ordering"
+
+before=$(wc -l < "$SDK_TEST_LOG")
+(
+    mkdir "$root/home"
+    cd "$root/home"
+    export HOME="$root/home" MISE_CONFIG_FILE="$root/home/runtime.mise.toml"
+    printf '[tool_alias.java]\nbackend = "asdf:java"\n' > "$MISE_CONFIG_FILE"
+    run cache clear
+    run use --global java@22.0.0
+    run reshim
+    run exec -- sh -eu -c '
+        test -z "${ANDROID_HOME:-}"
+        test -z "${ANDROID_SDK_ROOT:-}"
+        test "$(java)" = "fake Java 22.0.0"
+    '
+) > "$root/outside-project.log" 2>&1 || { cat "$root/outside-project.log" >&2; exit 1; }
+if grep -Eq 'Error listing bin paths|Cannot locate selected Android command-line tools' "$root/outside-project.log"; then
+    cat "$root/outside-project.log" >&2
+    die "unrelated global install or reshim warned about project SDK dependencies"
+fi
+[[ "$(wc -l < "$SDK_TEST_LOG")" == "$before" ]] || die "unrelated global install executed Android tools"
+run exec -- sh -eu -c '
+    test "$ANDROID_HOME" = "$MISE_DATA_DIR/installs/android-sdk/21.0.0"
+    test "$ANDROID_SDK_ROOT" = "$ANDROID_HOME"
+    case ":$PATH:" in *":$ANDROID_HOME/build-tools/37.0.0:"*) ;; *) exit 1 ;; esac
+'
+pass "unrelated global install and reshim stay quiet outside project; project activation still works"
 printf 'PASS: actual mise runtime contract suite\n'
