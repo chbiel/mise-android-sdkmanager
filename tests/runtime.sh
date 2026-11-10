@@ -163,6 +163,39 @@ run install --force android-sdkmanager:platform-tools > "$root/matching-force.lo
 [[ "$(install_count)" == "$before" ]] || die "matching singleton was reinstalled"
 pass "matching singleton payload reused"
 
+write_config '"android-sdkmanager:platform-tools" = "34.0.0"
+"android-sdkmanager:emulator" = "36.1.0"'
+run install > "$root/stale-singletons.log" 2>&1 || { cat "$root/stale-singletons.log" >&2; exit 1; }
+old_pt_record=$(record_for android-sdkmanager:platform-tools)
+old_emulator_record=$(record_for android-sdkmanager:emulator)
+write_config '"android-sdkmanager:platform-tools" = { version = "36.0.2", strict_revision = true }
+"android-sdkmanager:emulator" = { version = "36.2.1", strict_revision = true }'
+run install > "$root/current-singletons.log" 2>&1 || { cat "$root/current-singletons.log" >&2; exit 1; }
+before=$(wc -l < "$SDK_TEST_LOG")
+for operation in install reshim exec; do
+    run cache clear android-sdkmanager:platform-tools android-sdkmanager:emulator > "$root/singletons-cache.log" 2>&1
+    if [[ "$operation" == exec ]]; then
+        run exec -- sh -eu -c '
+            test "$ANDROID_HOME" = "$ANDROID_SDK_ROOT"
+            test "$(adb)" = "fake platform-tools"
+            test "$(emulator)" = "fake emulator"
+            case ":$PATH:" in *":$ANDROID_HOME/platform-tools:"*) ;; *) exit 1 ;; esac
+            case ":$PATH:" in *":$ANDROID_HOME/emulator:"*) ;; *) exit 1 ;; esac
+        ' > "$root/singletons-$operation.log" 2>&1
+    else
+        run "$operation" > "$root/singletons-$operation.log" 2>&1
+    fi
+    if grep -Fq "differs from mise" "$root/singletons-$operation.log"; then
+        cat "$root/singletons-$operation.log" >&2
+        die "$operation warned about inactive singleton records"
+    fi
+done
+assert_contains "$root/singletons-install.log" "all tools are installed"
+[[ "$(wc -l < "$SDK_TEST_LOG")" == "$before" ]] || die "singleton discovery executed Android tools"
+[[ -f "$old_pt_record/.mise-sdk-package.json" && -f "$old_emulator_record/.mise-sdk-package.json" ]] \
+    || die "singleton discovery removed inactive records"
+pass "no-op install, reshim, and activation stay quiet with inactive singleton records"
+
 write_config '"android-sdkmanager:platform-tools" = "35.0.0"'
 expect_failure "fixture installer stderr" env SDK_TEST_FAIL=1 "$mise_bin" install
 assert_contains "$root/failure.log" "fixture installer stdout"

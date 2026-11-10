@@ -55,7 +55,7 @@ If you register the plugin under another name, such as `jds-sdkmanager`, use tha
 
 ### Platform-tools and emulator
 
-Use `latest` for these two families. Mise resolves it to a numeric revision for update tracking, but Android's installer accepts only the package name, not a target revision. **Numeric pins and lockfile revisions are advisory.** A valid installation with a different revision, newer or older, produces a warning by default.
+Use `latest` for these two families. Mise resolves it to a numeric revision for update tracking, but Android's installer accepts only the package name, not a target revision. **Numeric pins and lockfile revisions are advisory.** An installation attempt that finishes with a different valid revision, newer or older, produces a warning by default.
 
 To fail installation on a revision mismatch, add `strict_revision`:
 
@@ -63,7 +63,9 @@ To fail installation on a revision mismatch, add `strict_revision`:
 "android-sdkmanager:platform-tools" = { version = "latest", strict_revision = true, depends = ["android-sdk", "java"] }
 ```
 
-This boolean option applies only to platform-tools and emulator. It checks the observed revision; it cannot retrieve unavailable older releases or prevent another project from changing the shared package later. It also applies to `latest`, because mise passes its resolved number. Older mise releases that serialize booleans as `"true"`/`"false"` are supported.
+This boolean option applies only to platform-tools and emulator. It checks the observed revision during installation; it cannot retrieve unavailable older releases or prevent another project from changing the shared package later. It also applies to `latest`, because mise passes its resolved number. Older mise releases that serialize booleans as `"true"`/`"false"` are supported.
+
+Activation does not report revision mismatches. Mise also calls the environment hook when discovering executable paths for inactive installed versions during shim rebuilding; those records do not represent the current project's requested revisions. Missing or invalid package payloads still produce health warnings. To recheck a configured tool's revision explicitly, use the force-install command in [Activation and recovery](#activation-and-recovery); plain `mise install` can skip existing records.
 
 #### Recovering from revision mismatch warnings
 
@@ -141,7 +143,7 @@ Repeat the explicit force-install step after future `android-sdk` version switch
 
 ## Activation and recovery
 
-**Activation is read-only.** It does not execute Android tools, download packages, accept licenses, write receipts, or wait for the installation lock. When no Android command-line tools are selected in the current environment, activation silently contributes no environment variables; unrelated mise operations can proceed without Android SDK dependencies. SDK version discovery and package installation still require those dependencies.
+**Activation is read-only.** It does not execute Android tools, download packages, accept licenses, write receipts, wait for the installation lock, or check revision equality. When no Android command-line tools are selected in the current environment, activation silently contributes no environment variables; unrelated mise operations can proceed without Android SDK dependencies. SDK version discovery and package installation still require those dependencies.
 
 With a selected SDK, activation warns about detected missing package files without blocking activation, naming the affected SDK root and an explicit force-install command. Mise caches environment results, so these warnings are not continuous integrity checks.
 

@@ -20,8 +20,6 @@ function PLUGIN:BackendExecEnv(ctx) -- luacheck: ignore
     local ok, revision, failure = pcall(packages.installed_revision, sdk_root, package)
     if not ok or not revision then
         log.warn((ok and failure or tostring(revision)) .. repair)
-    elseif package.singleton and not packages.same_revision(revision, ctx.version) then
-        log.warn(revision_warning(ctx.tool, ctx.version, revision))
     end
 
     local env_vars = {

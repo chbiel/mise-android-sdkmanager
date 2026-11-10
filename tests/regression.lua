@@ -201,41 +201,40 @@ test("activation is read-only, nonfatal, and keeps legacy records", function()
     support.exec("rmdir " .. support.quote(root .. "/.mise-install-lock"))
 end)
 
-test("healthy activation does not execute installers or acquire locks", function()
+test("healthy singleton activation stays quiet for current and stale records", function()
     local root = selected_root
-    support.exec(
-        "mkdir -p " .. support.quote(root .. "/platform-tools") .. " " .. support.quote(root .. "/cmdline-tools/20/bin")
-    )
-    support.write(root .. "/platform-tools/adb", "fake")
-    support.write(root .. "/platform-tools/source.properties", "Pkg.Path=platform-tools\nPkg.Revision=36.0.2\n")
+    support.exec("mkdir -p " .. support.quote(root .. "/cmdline-tools/20/bin"))
     support.write(root .. "/cmdline-tools/20/bin/sdkmanager", "fake")
-    support.warnings = {}
-    support.commands = {}
-    support.readonly = true
-    local result = PLUGIN:BackendExecEnv({
-        tool = "platform-tools",
-        version = "36.0.2",
-        install_path = directory .. "/record",
-        options = {},
-    })
-    support.readonly = false
-    assert_readonly_commands()
-    equal(#support.warnings, 0)
-    equal(result.env_vars[3].value, root .. "/platform-tools")
-    assert(not support.exists(root .. "/.mise-install-lock"))
-    support.readonly = true
-    PLUGIN:BackendExecEnv({
-        tool = "platform-tools",
-        version = "35.0.0",
-        install_path = directory .. "/record",
-        options = { strict_revision = true },
-    })
-    support.readonly = false
-    assert_readonly_commands()
-    assert(
-        table.concat(support.warnings):find("differs from mise", 1, true),
-        "activation should warn about revision drift"
-    )
+    for _, case in ipairs({
+        { tool = "platform-tools", payload = "adb", current = "36.0.2", stale = "35.0.0" },
+        { tool = "emulator", payload = "emulator", current = "36.2.1", stale = "36.1.0" },
+    }) do
+        local payload = root .. "/" .. case.tool
+        support.exec("mkdir -p " .. support.quote(payload))
+        support.write(payload .. "/" .. case.payload, "fake")
+        support.write(
+            payload .. "/source.properties",
+            "Pkg.Path=" .. case.tool .. "\nPkg.Revision=" .. case.current .. "\n"
+        )
+        for _, version in ipairs({ case.current, case.stale }) do
+            support.warnings = {}
+            support.commands = {}
+            support.readonly = true
+            local result = PLUGIN:BackendExecEnv({
+                tool = case.tool,
+                version = version,
+                install_path = directory .. "/record",
+                options = { strict_revision = true },
+            })
+            support.readonly = false
+            assert_readonly_commands()
+            equal(#support.warnings, 0)
+            equal(result.env_vars[1].value, root)
+            equal(result.env_vars[2].value, root)
+            equal(result.env_vars[3].value, payload)
+            assert(not support.exists(root .. "/.mise-install-lock"))
+        end
+    end
 end)
 
 test("activation is a no-op without selected Android command-line tools", function()
