@@ -22,7 +22,8 @@ function M.with_lock(sdk_root, operation, callback)
             .. tonumber(timeout)
             .. "\n"
             .. [[
-while ! failure=$(mkdir "$lock" 2>&1); do
+# uutils mkdir can exit 0 after losing a creation race; require its creation message.
+while ! failure=$(mkdir -v "$lock" 2>&1) || [ -z "$failure" ]; do
     if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -d "$lock" ]; } || [ ! -w "$root" ]; then
         printf 'Cannot acquire Android SDK lock: %s (check permissions and conflicting paths)\n' "$lock" >&2
         printf '%s\n' "$failure" >&2

@@ -96,7 +96,9 @@ export SDK_TEST_DEPENDENCY_ROOT="$dependency_root"
 
 if [[ "${1:-}" == "--sdk-stress" ]]; then
     sdk_tools=(
+        "${PLUGIN}:build-tools@35.0.0"
         "${PLUGIN}:build-tools@36.0.0"
+        "${PLUGIN}:platforms@android-35"
         "${PLUGIN}:platforms@android-36"
         "${PLUGIN}:ndk@28.2.13676358"
         "${PLUGIN}:cmake@3.22.1"
@@ -105,7 +107,9 @@ if [[ "${1:-}" == "--sdk-stress" ]]; then
     mise exec "${sdk_tools[@]}" -- sh -eu -c '
         test "$ANDROID_HOME" = "$ANDROID_SDK_ROOT"
         test "$ANDROID_HOME" = "$SDK_TEST_DEPENDENCY_ROOT"
+        test -f "$ANDROID_HOME/build-tools/35.0.0/aapt"
         test -f "$ANDROID_HOME/build-tools/36.0.0/aapt"
+        test -f "$ANDROID_HOME/platforms/android-35/android.jar"
         test -f "$ANDROID_HOME/platforms/android-36/android.jar"
         test -f "$ANDROID_HOME/ndk/28.2.13676358/ndk-build"
         test -f "$ANDROID_HOME/cmake/3.22.1/bin/cmake"

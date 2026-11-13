@@ -19,9 +19,11 @@ done
 second=$!
 "$lua" "$plugin/tests/lock-worker.lua" "$plugin" "$root/other" independent &
 independent=$!
-wait "$first"
-wait "$second"
-wait "$independent"
+status=0
+for pid in "$first" "$second" "$independent"; do
+    wait "$pid" || status=1
+done
+[[ "$status" == 0 ]]
 [[ "$(cat "$root/sdk/events")" == $'start first\nend first\nstart second\nend second' ]]
 [[ "$(cat "$root/other/events")" == $'start independent\nend independent' ]]
 [[ ! -e "$root/sdk/.mise-install-lock" && ! -e "$root/other/.mise-install-lock" ]]
@@ -35,11 +37,26 @@ grep -q "expected callback failure" "$root/failure"
 
 mkdir "$root/sdk/.mise-install-lock"
 MISE_ANDROID_SDK_LOCK_TIMEOUT=0 "$lua" "$plugin/tests/lock-worker.lua" "$plugin" "$root/other" free
-if MISE_ANDROID_SDK_LOCK_TIMEOUT=0 "$lua" "$plugin/tests/lock-worker.lua" "$plugin" "$root/sdk" blocked > "$root/timeout" 2>&1; then
+real_mkdir=$(command -v mkdir)
+mkdir "$root/bin"
+cat > "$root/bin/mkdir" <<'EOF'
+#!/bin/sh
+set -eu
+# Model uutils mkdir reporting success after losing a concurrent creation.
+for argument do
+    if [ "$argument" = "$SDK_TEST_LOCK" ] && [ -d "$argument" ]; then
+        exit 0
+    fi
+done
+exec "$SDK_TEST_MKDIR" "$@"
+EOF
+chmod +x "$root/bin/mkdir"
+if PATH="$root/bin:$PATH" SDK_TEST_MKDIR="$real_mkdir" SDK_TEST_LOCK="$root/sdk/.mise-install-lock" \
+    MISE_ANDROID_SDK_LOCK_TIMEOUT=0 "$lua" "$plugin/tests/lock-worker.lua" "$plugin" "$root/sdk" blocked > "$root/timeout" 2>&1; then
     echo "Stale lock unexpectedly acquired" >&2
     exit 1
 fi
 grep -q "Timed out waiting for Android SDK lock" "$root/timeout"
 [[ -d "$root/sdk/.mise-install-lock" ]]
 rmdir "$root/sdk/.mise-install-lock"
-echo "PASS: canonical-root serialization, independent roots, failures, and stale locks"
+echo "PASS: canonical-root serialization despite mkdir false success, independent roots, failures, and stale locks"

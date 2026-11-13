@@ -198,7 +198,7 @@ Normal completion and errors release it, but abrupt termination can leave a lock
 
 | Command | Coverage |
 | --- | --- |
-| `mise run test --unit` | Offline Lua regression and cross-process locking |
+| `mise run test --unit` | Offline Lua regression and cross-process locking, including false-success `mkdir` contention |
 | `mise run test --runtime` | Also exercises actual mise with fake SDK installers |
-| `mise run test --sdk-stress` | Also downloads SDK tools 20.0, Java 21, build-tools 36.0.0, platform android-36, NDK 28.2.13676358, and CMake 3.22.1 for concurrent installs, warm activation, and real `apkanalyzer files list` on a minimal archive |
+| `mise run test --sdk-stress` | Also downloads SDK tools 20.0, Java 21, build-tools 35.0.0 and 36.0.0, platforms android-35 and android-36, NDK 28.2.13676358, and CMake 3.22.1 for concurrent installs, warm activation, and real `apkanalyzer files list` on a minimal archive |
 | `mise run test` | Unit/runtime coverage plus real version discovery, platform-tools, and emulator installation |
